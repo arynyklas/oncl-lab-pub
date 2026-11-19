@@ -28,7 +28,7 @@ use time::{Date, Month};
 pub const FILE_NAME: &str = "builders.toml";
 
 /// The image every entry is a digest of.
-pub const IMAGE: &str = "ghcr.io/arynyklas/oncl-plugin-builder";
+pub const IMAGE: &str = "localhost:5000/oncl-plugin-builder";
 
 /// The largest file read.
 const MAX_LEN: u64 = 1024 * 1024;

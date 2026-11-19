@@ -12,3 +12,9 @@
 # commit = "<40 lowercase hex>"         # the commit of this repository it was built from
 # rust = "1.99.1"                       # the Rust release inside
 # added = 2026-11-19                    # when it was listed
+
+[[builder]]
+digest = "sha256:1a5d7af2112aa318cf6fd91b3b4984e893d28b180e59939c9a948a180d085681"
+commit = "443d21255aaa1c9a1d385b0213ab11c7026cbbe7"
+rust = "1.99.1"
+added = 2026-11-19
