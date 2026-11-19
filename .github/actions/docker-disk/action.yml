@@ -1,0 +1,66 @@
+name: Docker on a disk of limited size
+description: >-
+  Restarts Docker and containerd with /var/lib/docker and /var/lib/containerd on one file
+  system of `gib` GiB, a loop-mounted file on the runner's emptier disk. Neither xtask nor
+  Docker caps what containers, their volumes and their images write (`--storage-opt size=`
+  works on some storage drivers only), so a build that fills the disk fills this file
+  system, fails its job and leaves the runner's own disk room for the job's report
+  (docs/dev/publishers.md, «Сеть проверки 25»). Run before anything uses Docker: what Docker
+  held before is hidden, not moved.
+inputs:
+  gib:
+    description: The size of the file system in GiB.
+    required: false
+    default: "20"
+runs:
+  using: composite
+  steps:
+    - name: Docker on a file system of limited size
+      shell: bash
+      env:
+        GIB: ${{ inputs.gib }}
+      run: |
+        set -euo pipefail
+        if ! [[ "$GIB" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::gib must be a whole number of GiB, not $GIB"
+          exit 1
+        fi
+        # The disk with more room: /mnt is the runner's temporary disk where it has one.
+        best="" room=0
+        for dir in /mnt /var/tmp; do
+          [ -d "$dir" ] || continue
+          free="$(df --output=avail -BG "$dir" | tail -n 1 | tr -dc 0-9)"
+          if [ "$free" -gt "$room" ]; then
+            best="$dir" room="$free"
+          fi
+        done
+        if [ "$room" -lt $((GIB + 4)) ]; then
+          echo "::error::no disk has room for a ${GIB} GiB file system and 4 GiB more (the most free: ${room} GiB on ${best:-none})"
+          exit 1
+        fi
+        image="$best/oncl-docker.img"
+        mount_dir=/srv/oncl-docker
+        sudo systemctl stop docker.socket docker.service
+        containerd=false
+        if systemctl is-active --quiet containerd.service; then
+          containerd=true
+          sudo systemctl stop containerd.service
+        fi
+        sudo fallocate -l "${GIB}G" "$image"
+        sudo mkfs.ext4 -q -F -m 0 "$image"
+        sudo mkdir -p "$mount_dir"
+        sudo mount -o loop,nodev,nosuid "$image" "$mount_dir"
+        for name in docker containerd; do
+          sudo mkdir -p "$mount_dir/$name" "/var/lib/$name"
+          sudo mount --bind "$mount_dir/$name" "/var/lib/$name"
+        done
+        if [ "$containerd" = true ]; then
+          sudo systemctl start containerd.service
+        fi
+        sudo systemctl start docker.service
+        root="$(docker info --format '{{.DockerRootDir}}')"
+        if [ "$root" != /var/lib/docker ]; then
+          echo "::error::Docker keeps its data in $root, not on the limited file system"
+          exit 1
+        fi
+        df -h /var/lib/docker /var/lib/containerd

@@ -1,0 +1,36 @@
+{
+  "channel": "stable",
+  "core": [
+    {
+      "flavors": {
+        "win-x64": {
+          "contents_sha256": "0202020202020202020202020202020202020202020202020202020202020202",
+          "sha256": "0101010101010101010101010101010101010101010101010101010101010101",
+          "size": 123,
+          "url": "https://example.invalid/releases/v0.1.0/full.nupkg"
+        }
+      },
+      "notes_url": "https://example.invalid/releases/v0.1.0",
+      "revoked": false,
+      "rollout": 100,
+      "version": "0.1.0"
+    }
+  ],
+  "expires": "2026-12-14T00:00:00Z",
+  "extension": {
+    "chromium_zip": {
+      "sha256": "0303030303030303030303030303030303030303030303030303030303030303",
+      "url": "https://example.invalid/e.zip"
+    },
+    "firefox_xpi": {
+      "sha256": "0404040404040404040404040404040404040404040404040404040404040404",
+      "url": "https://example.invalid/e.xpi"
+    },
+    "version": "0.1.0"
+  },
+  "generated": "2026-11-14T00:00:00Z",
+  "plugins": [],
+  "schema": 1,
+  "seq": 7
+}
+

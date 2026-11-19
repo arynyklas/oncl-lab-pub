@@ -1,0 +1,43 @@
+{
+ "signatures": [
+  {
+   "keyid": "bdd02e810fe597a60d5112bc540aac50c5f0f209934bdaef282a69338525f4f6",
+   "sig": "d8632c240331e2c08a28ae8aacb3124a840f3fb420a86e73f27754b29aad5edad21df93b98b648881e3cdd446f31046469240cf77a88aecfbf512b4168262803"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2026-12-15T00:00:00Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "plugins/beta/kz.beta.deep/1.0.0.onclp": {
+    "custom": {
+     "oncl": {
+      "capabilities": {},
+      "channel": "stable",
+      "id": "kz.beta.deep",
+      "min_core": "0.1.2",
+      "modules": [
+       "kz.beta.Module"
+      ],
+      "name": {
+       "en": "kz.beta.deep",
+       "kk": "kz.beta.deep",
+       "ru": "kz.beta.deep"
+      },
+      "revoked": false,
+      "rollout": 100,
+      "schema": 1,
+      "url": "https://downloads.example.invalid/kz.beta.deep-1.0.0.onclp",
+      "version": "1.0.0"
+     }
+    },
+    "hashes": {
+     "sha256": "88cb3d9af1345d64e29d884c653681af1fe9b3246bb73156b69282d829341063"
+    },
+    "length": 37
+   }
+  },
+  "version": 1
+ }
+}

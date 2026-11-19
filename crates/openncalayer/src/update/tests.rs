@@ -1,0 +1,1588 @@
+//! The updater with a fake transport, installer and daemon, on a sandbox data directory, and
+//! indexes served as targets of a TUF repository of synthetic keys.
+
+use super::*;
+use oncl_pki::http::{HttpError, HttpMethod, HttpReply, HttpRequest, HttpTransport};
+use oncl_update::tuf::testing::Repo;
+use oncl_update::{Channel, CoreRelease, FlavorPackage, Index, Package, Sha256};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use time::Duration as TimeDuration;
+
+use crate::repository::tests::{BASE, Server, delegations_members, timestamp_url, url};
+
+/// Something done while a request is being answered.
+type Hook = Box<dyn FnOnce() + Send>;
+
+/// Replies with the status and body served at a URL (200 by [`FakeTransport::serve`]), and
+/// refuses any other; records what was asked: the URL, the size limit and whether only
+/// HTTPS was allowed, and apart the timeout. A hook runs during the next request.
+#[derive(Default)]
+pub(crate) struct FakeTransport {
+    bodies: Mutex<BTreeMap<String, (u16, Vec<u8>)>>,
+    asked: Mutex<Vec<(String, u64, bool)>>,
+    timeouts: Mutex<Vec<Duration>>,
+    hook: Mutex<Option<Hook>>,
+    /// Hooks that run during the next request of their URL.
+    url_hooks: Mutex<BTreeMap<String, Hook>>,
+}
+
+impl FakeTransport {
+    pub(crate) fn serve(&self, url: &str, body: &[u8]) {
+        self.reply(url, 200, body);
+    }
+
+    pub(crate) fn reply(&self, url: &str, status: u16, body: &[u8]) {
+        lock(&self.bodies).insert(url.to_owned(), (status, body.to_vec()));
+    }
+
+    pub(crate) fn reply_of(&self, url: &str) -> (u16, Vec<u8>) {
+        lock(&self.bodies)[url].clone()
+    }
+
+    pub(crate) fn asked(&self) -> Vec<(String, u64, bool)> {
+        lock(&self.asked).clone()
+    }
+
+    fn timeouts(&self) -> Vec<Duration> {
+        lock(&self.timeouts).clone()
+    }
+
+    /// Runs `hook` during the next request of `url`, before it is answered.
+    pub(crate) fn during(&self, url: &str, hook: impl FnOnce() + Send + 'static) {
+        lock(&self.url_hooks).insert(url.to_owned(), Box::new(hook));
+    }
+}
+
+impl HttpTransport for FakeTransport {
+    fn send(&self, request: &HttpRequest<'_>) -> Result<HttpReply, HttpError> {
+        match request.method {
+            HttpMethod::Get => {
+                let (url, opts) = (request.url, request.opts);
+                lock(&self.asked).push((url.to_owned(), opts.max_len, opts.https_only));
+                lock(&self.timeouts).push(opts.timeout);
+                let hook = lock(&self.hook).take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+                let url_hook = lock(&self.url_hooks).remove(url);
+                if let Some(hook) = url_hook {
+                    hook();
+                }
+                let (status, body) = lock(&self.bodies)
+                    .get(url)
+                    .cloned()
+                    .ok_or_else(|| HttpError::other("connection refused"))?;
+                Ok(HttpReply {
+                    status,
+                    content_type: None,
+                    location: None,
+                    body,
+                })
+            }
+            HttpMethod::Post => {
+                let (_, _, _, _) = (
+                    request.url,
+                    request.content_type.unwrap_or_default(),
+                    request.body,
+                    request.opts,
+                );
+                Err(HttpError::other("no POST here"))
+            }
+        }
+    }
+}
+
+/// What the fakes saw, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Event {
+    Download(Version, bool),
+    Apply(Version),
+    Busy,
+    Hold,
+    Exit,
+    Notice(Notice),
+}
+
+type Log = Arc<Mutex<Vec<Event>>>;
+
+struct FakeInstaller {
+    current: Version,
+    log: Log,
+    fail_download: bool,
+    fail_apply: bool,
+    /// The first this many applies find the package gone.
+    missing: AtomicUsize,
+    /// The timeout of each download.
+    timeouts: Arc<Mutex<Vec<Duration>>>,
+}
+
+impl Installer for FakeInstaller {
+    fn current(&self) -> Version {
+        self.current.clone()
+    }
+
+    fn download(&self, target: &Target, downgrade: bool, timeout: Duration) -> Result<(), String> {
+        lock(&self.timeouts).push(timeout);
+        lock(&self.log).push(Event::Download(target.version.clone(), downgrade));
+        if self.fail_download {
+            return Err("the package's sha256 does not match the update index".to_owned());
+        }
+        Ok(())
+    }
+
+    fn apply_on_exit(&self, target: &Target) -> Result<(), ApplyError> {
+        if self.fail_apply {
+            return Err(ApplyError::Failed("the updater did not start".to_owned()));
+        }
+        if self
+            .missing
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(ApplyError::PackageMissing("File does not exist".to_owned()));
+        }
+        lock(&self.log).push(Event::Apply(target.version.clone()));
+        Ok(())
+    }
+}
+
+/// A daemon busy for its first `busy` looks, that cannot hold requests the first `refuse`
+/// times.
+struct FakeHost {
+    log: Log,
+    busy: AtomicUsize,
+    refuse: AtomicUsize,
+}
+
+impl Host for FakeHost {
+    fn busy(&self) -> bool {
+        lock(&self.log).push(Event::Busy);
+        self.busy
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    fn hold(&self) -> bool {
+        lock(&self.log).push(Event::Hold);
+        self.refuse
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_err()
+    }
+
+    fn release(&self) {}
+
+    fn notify(&self, notice: Notice) {
+        lock(&self.log).push(Event::Notice(notice));
+    }
+
+    fn exit(&self) {
+        lock(&self.log).push(Event::Exit);
+    }
+}
+
+fn v(s: &str) -> Version {
+    Version::parse(s).unwrap()
+}
+
+/// A release of `version` for Windows x64, with its full package only.
+fn release(version: &str, rollout: u8, revoked: bool) -> CoreRelease {
+    let name = format!("openncalayer-{version}-win-x64-full.nupkg");
+    let flavor = FlavorPackage {
+        full: Package {
+            url: format!("https://example.org/v{version}/{name}"),
+            sha256: Sha256::of(name.as_bytes()),
+            size: name.len() as u64,
+        },
+        contents_sha256: None,
+        delta_from: BTreeMap::new(),
+    };
+    CoreRelease {
+        version: v(version),
+        flavors: BTreeMap::from([(Flavor::WinX64.as_str().to_owned(), flavor)]),
+        rollout,
+        revoked,
+        notes_url: None,
+    }
+}
+
+/// A sandbox: its data directory, the TUF repository served and the root the client trusts.
+struct Sandbox {
+    dir: tempfile::TempDir,
+    transport: Arc<FakeTransport>,
+    server: Server,
+    log: Log,
+    download_timeouts: Arc<Mutex<Vec<Duration>>>,
+}
+
+/// How a fake updater behaves.
+#[derive(Clone, Copy, Default)]
+struct Fakes {
+    busy: usize,
+    refuse_hold: usize,
+    fail_download: bool,
+    fail_apply: bool,
+    /// The first this many applies find the package gone.
+    missing: usize,
+    /// The health check's grace and settle time, in milliseconds; 60 s and 5 ms by default.
+    health: Option<(u64, u64)>,
+}
+
+impl Sandbox {
+    /// With the settings of updates on, from the stable channel (saved: the default
+    /// depends on this build's version).
+    fn new() -> Sandbox {
+        let sandbox = Sandbox {
+            dir: tempfile::tempdir().unwrap(),
+            transport: Arc::new(FakeTransport::default()),
+            server: Server::new(),
+            log: Log::default(),
+            download_timeouts: Arc::default(),
+        };
+        sandbox.settings(true);
+        sandbox
+    }
+
+    /// Publishes the stable index `seq` of `core`, made `age` ago, into the TUF repository.
+    fn publish_aged(&self, seq: u64, core: Vec<CoreRelease>, age: TimeDuration) {
+        let generated = OffsetDateTime::now_utc() - age;
+        let index = Index {
+            schema: 1,
+            channel: Channel::Stable,
+            seq,
+            generated,
+            expires: generated + TimeDuration::days(30),
+            core,
+            extension: None,
+            plugins: Vec::new(),
+        };
+        let body = serde_json::to_vec_pretty(&index).unwrap();
+        self.server.publish(&self.transport, Channel::Stable, &body);
+    }
+
+    fn publish(&self, seq: u64, core: Vec<CoreRelease>) {
+        self.publish_aged(seq, core, TimeDuration::days(1));
+    }
+
+    /// The repository of the updater, trusting the root of the sandbox's server.
+    fn repository(&self) -> Arc<Repository> {
+        Arc::new(
+            Repository::with_anchor(
+                &self.server.anchor(),
+                self.dir.path(),
+                BASE,
+                Arc::clone(&self.transport) as _,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn settings(&self, enabled: bool) {
+        std::fs::write(
+            self.dir.path().join("settings.json"),
+            format!(r#"{{"updates": {{"enabled": {enabled}, "channel": "stable"}}}}"#),
+        )
+        .unwrap();
+    }
+
+    fn updater(&self, current: &str, busy: usize) -> Updater {
+        self.updater_with(
+            current,
+            Fakes {
+                busy,
+                ..Fakes::default()
+            },
+        )
+    }
+
+    fn updater_with(&self, current: &str, fakes: Fakes) -> Updater {
+        let (grace, settle) = fakes.health.unwrap_or((60_000, 5));
+        Updater::new(
+            UpdaterConfig {
+                data_dir: self.dir.path().to_owned(),
+                settings: self.dir.path().join("settings.json"),
+                flavor: Flavor::WinX64,
+                idle_poll: Duration::from_millis(1),
+                health_grace: Duration::from_millis(grace),
+                health_settle: Duration::from_millis(settle),
+            },
+            self.repository(),
+            Box::new(FakeInstaller {
+                current: v(current),
+                log: Arc::clone(&self.log),
+                fail_download: fakes.fail_download,
+                fail_apply: fakes.fail_apply,
+                missing: AtomicUsize::new(fakes.missing),
+                timeouts: Arc::clone(&self.download_timeouts),
+            }),
+            Box::new(FakeHost {
+                log: Arc::clone(&self.log),
+                busy: AtomicUsize::new(fakes.busy),
+                refuse: AtomicUsize::new(fakes.refuse_hold),
+            }),
+        )
+    }
+
+    /// The events since the last call.
+    fn events(&self) -> Vec<Event> {
+        std::mem::take(&mut *lock(&self.log))
+    }
+
+    /// Waits up to 10 s for `event`; the events until then.
+    fn wait_for(&self, event: &Event) -> Vec<Event> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !lock(&self.log).contains(event) {
+            assert!(
+                Instant::now() < deadline,
+                "no {event:?} in {:?}",
+                lock(&self.log)
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        self.events()
+    }
+
+    fn state(&self) -> State {
+        State::load(self.dir.path()).unwrap()
+    }
+
+    fn pending(&self, from: &str, to: &str, started: Option<TimeDuration>, rollback: bool) {
+        let mut state = self.state();
+        let now = OffsetDateTime::now_utc();
+        state.pending_health = Some(PendingHealth {
+            from: v(from),
+            to: v(to),
+            applied: now - TimeDuration::minutes(5),
+            started: started.map(|ago| now - ago),
+            // A run in progress at the last start: one crash already counted.
+            crashes: u32::from(started.is_some()),
+            rollback,
+            attempts: u32::from(rollback),
+        });
+        state.save(self.dir.path()).unwrap();
+    }
+}
+
+fn available(version: &str, installing: bool) -> UpdateStatus {
+    UpdateStatus::Available {
+        version: version.to_owned(),
+        installing,
+    }
+}
+
+fn two_releases() -> Vec<CoreRelease> {
+    vec![release("0.1.0", 100, false), release("0.2.0", 100, false)]
+}
+
+#[test]
+fn an_update_is_found_downloaded_and_applied_once_the_daemon_is_idle() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater_with(
+        "0.1.0",
+        Fakes {
+            busy: 2,
+            refuse_hold: 1,
+            ..Fakes::default()
+        },
+    );
+
+    let checked = u.check(false, None);
+    assert_eq!(checked.status, available("0.2.0", true));
+    assert!(!checked.retry_soon);
+    assert_eq!(u.status(), available("0.2.0", true));
+    assert_eq!(
+        s.events(),
+        [Event::Notice(Notice::Checked(available("0.2.0", true)))]
+    );
+    assert_eq!(s.state().last_seq, BTreeMap::from([(Channel::Stable, 3)]));
+    // The metadata and the index over HTTPS only, each within its limit: the next root (not
+    // there), the timestamp, snapshot and targets, then the index file under its hash name.
+    let asked = s.transport.asked();
+    assert!(
+        asked.iter().all(|(_, _, https_only)| *https_only),
+        "{asked:?}"
+    );
+    let urls: Vec<&str> = asked.iter().map(|(url, ..)| url.as_str()).collect();
+    assert_eq!(
+        urls,
+        [
+            url("metadata/2.root.json"),
+            url("metadata/timestamp.json"),
+            url("metadata/1.snapshot.json"),
+            url("metadata/1.targets.json"),
+            url(&s.server.repo().index_file_path(Channel::Stable)),
+        ]
+    );
+    let index_file = s.server.repo().index_file_path(Channel::Stable);
+    let index_len = s.server.repo().get(&index_file).unwrap().len() as u64;
+    assert_eq!(
+        asked[4].1, index_len,
+        "the target is read up to the length listed"
+    );
+
+    // A sign request runs: the update waits for it. A request comes in just as the update
+    // is to be applied: it waits again. Then new requests are held back, and it applies.
+    let plan = checked.plan.unwrap();
+    assert_eq!((plan.downgrade, plan.rollback), (false, false));
+    assert_eq!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert_eq!(
+        s.events(),
+        [
+            Event::Download(v("0.2.0"), false),
+            Event::Busy,
+            Event::Busy,
+            Event::Busy,
+            Event::Hold,
+            Event::Busy,
+            Event::Hold,
+            Event::Apply(v("0.2.0")),
+        ]
+    );
+    let pending = s.state().pending_health.unwrap();
+    assert_eq!((pending.from, pending.to), (v("0.1.0"), v("0.2.0")));
+    assert_eq!((pending.started, pending.rollback), (None, false));
+
+    // The same version found again is not told again.
+    assert_eq!(u.check(false, None).status, available("0.2.0", true));
+    assert_eq!(s.events(), []);
+}
+
+#[test]
+fn the_updater_finds_its_version_whatever_the_delegations_of_tuf_v1() {
+    for (what, delegations) in delegations_members() {
+        let s = Sandbox::new();
+        s.server.repo().delegations = Some(delegations);
+        s.publish(3, two_releases());
+        let u = s.updater("0.1.0", 0);
+        let checked = u.check(false, None);
+        assert_eq!(checked.status, available("0.2.0", true), "{what}");
+        assert!(checked.plan.is_some(), "{what}");
+    }
+}
+
+#[test]
+fn an_update_no_longer_offered_after_the_wait_is_not_applied() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    // Revoked while the update waited.
+    s.publish(
+        4,
+        vec![release("0.1.0", 100, false), release("0.2.0", 100, true)],
+    );
+    assert_ne!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert!(!s.events().iter().any(|e| matches!(e, Event::Apply(_))));
+    assert_eq!(s.state().pending_health, None);
+}
+
+/// The repository cannot be reached: nothing answers its timestamp.
+fn network_down(s: &Sandbox) {
+    s.transport.reply(&timestamp_url(), 503, b"");
+}
+
+fn applied(s: &Sandbox) -> bool {
+    s.events().iter().any(|e| matches!(e, Event::Apply(_)))
+}
+
+#[test]
+fn a_network_failure_at_the_final_check_applies_what_the_saved_state_still_vouches_for() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 1);
+    let plan = u.check(false, None).plan.unwrap();
+    s.events();
+    // The network fails after the download, while the update waits for an idle daemon.
+    network_down(&s);
+    assert_eq!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert_eq!(
+        s.events(),
+        [
+            Event::Download(v("0.2.0"), false),
+            Event::Busy,
+            Event::Busy,
+            Event::Hold,
+            Event::Apply(v("0.2.0")),
+        ]
+    );
+    let pending = s.state().pending_health.unwrap();
+    assert_eq!((pending.from, pending.to), (v("0.1.0"), v("0.2.0")));
+    // The failed check's "failed" is not what the settings window keeps showing.
+    assert_eq!(u.status(), available("0.2.0", true));
+}
+
+#[test]
+fn a_network_failure_at_the_final_check_with_expired_saved_state_does_not_apply() {
+    let s = Sandbox::new();
+    // The targets that vouch for the index hold for 3 s only.
+    s.server.repo().lifetimes.targets = TimeDuration::seconds(3);
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    s.events();
+    network_down(&s);
+    thread::sleep(Duration::from_millis(3200));
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+    assert_eq!(s.state().pending_health, None);
+}
+
+#[test]
+fn a_network_failure_does_not_undo_a_withdrawal_the_repository_announced() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    // A newer index no longer offers 0.2.0: the final check reads it.
+    s.publish(4, vec![release("0.1.0", 100, false)]);
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+    // What the saved state vouches for now is that newer index, whatever the network does.
+    network_down(&s);
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+    assert_eq!(s.state().pending_health, None);
+}
+
+#[test]
+fn a_network_failure_at_the_final_check_still_honours_the_settings() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    network_down(&s);
+
+    // Updates turned off while the update waited.
+    s.settings(false);
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+
+    // Another channel chosen: the index kept is of the stable one.
+    std::fs::write(
+        s.dir.path().join("settings.json"),
+        r#"{"updates": {"enabled": true, "channel": "beta"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+
+    // Back to what it was: the update goes on.
+    s.settings(true);
+    assert_eq!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert!(applied(&s));
+}
+
+#[test]
+fn a_network_failure_at_the_final_check_does_not_apply_a_version_marked_bad_meanwhile() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    network_down(&s);
+    let mut state = s.state();
+    state.bad.insert(v("0.2.0"));
+    state.save(s.dir.path()).unwrap();
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+}
+
+#[test]
+fn a_refresh_that_failed_after_newer_metadata_was_accepted_is_not_a_fallback() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    assert_eq!(u.repository.newer_metadata_seen(), Ok(false));
+    // A new publication (the same releases): its timestamp is read, then its snapshot
+    // cannot be. What the saved state vouches for may be what that publication withdrew.
+    s.publish(4, two_releases());
+    s.transport
+        .reply(&url("metadata/2.snapshot.json"), 503, b"");
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert_eq!(u.repository.newer_metadata_seen(), Ok(true));
+    assert!(!applied(&s));
+    assert_eq!(s.state().pending_health, None);
+}
+
+#[test]
+fn a_refusal_at_the_final_check_never_becomes_the_fallback() {
+    let s = Sandbox::new();
+    s.publish(7, two_releases());
+    let old = s
+        .server
+        .repo()
+        .get("metadata/timestamp.json")
+        .unwrap()
+        .to_vec();
+    s.publish(8, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    s.events();
+
+    // The repository serves the older timestamp again: a rollback, refused.
+    s.transport.serve(&timestamp_url(), &old);
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(matches!(u.status(), UpdateStatus::Failed(e) if e.contains("was trusted before")));
+    assert!(!applied(&s));
+
+    // A repository of other keys than the root built in: a signature that does not hold.
+    let hostile = Server::new();
+    *hostile.repo() = Repo::with_seed(41);
+    hostile.publish(
+        &s.transport,
+        Channel::Stable,
+        &crate::repository::tests::index(Channel::Stable, 9),
+    );
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(matches!(u.status(), UpdateStatus::Failed(e) if e.contains("signatures")));
+    assert!(!applied(&s));
+    assert_eq!(s.state().pending_health, None);
+}
+
+#[test]
+fn a_network_failure_long_after_the_index_was_last_read_does_not_apply() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let plan = u.check(false, None).plan.unwrap();
+    network_down(&s);
+    // The repository's word that the index is current is a timestamp's lifetime old.
+    lock(&u.kept).as_mut().unwrap().verified = OffsetDateTime::now_utc() - TimeDuration::days(8);
+    assert_eq!(
+        u.install(&plan, true, DOWNLOAD_TIMEOUT),
+        Installed::NotApplied
+    );
+    assert!(!applied(&s));
+    // Within it, the fallback holds.
+    lock(&u.kept).as_mut().unwrap().verified = OffsetDateTime::now_utc() - TimeDuration::days(6);
+    assert_eq!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+}
+
+#[test]
+fn the_new_version_confirms_its_health() {
+    let s = Sandbox::new();
+    s.pending("0.1.0", "0.2.0", None, false);
+    let u = Arc::new(s.updater("0.2.0", 0));
+    assert_eq!(u.startup(), Startup::Confirm);
+    assert!(s.state().pending_health.unwrap().started.is_some());
+    u.watch_health(|| true);
+    assert_eq!(
+        s.wait_for(&Event::Notice(Notice::Updated(v("0.2.0")))),
+        [Event::Notice(Notice::Updated(v("0.2.0")))]
+    );
+    assert_eq!(s.state().pending_health, None);
+    // Nothing more to confirm.
+    u.confirm_health();
+    assert_eq!(u.startup(), Startup::Normal);
+    assert_eq!(s.events(), []);
+
+    // Updated from a version that failed before (not a rollback): «Обновлено».
+    let mut state = s.state();
+    state.bad.insert(v("0.1.0"));
+    state.save(s.dir.path()).unwrap();
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::ZERO), false);
+    u.confirm_health();
+    assert_eq!(s.events(), [Event::Notice(Notice::Updated(v("0.2.0")))]);
+}
+
+#[test]
+fn a_version_that_ended_before_proving_healthy_is_rolled_back_at_its_next_start() {
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    // Two runs in a row ended without confirming its health or ending cleanly: its event
+    // loop or its servers did not come up, and the process died.
+    s.pending("0.1.0", "0.2.0", None, false);
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Confirm);
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Confirm);
+    assert_eq!(s.state().pending_health.unwrap().crashes, 1);
+    let bad = s.updater("0.2.0", 0);
+    let startup = bad.startup();
+    assert_eq!(
+        startup,
+        Startup::RollBack {
+            failed: v("0.2.0"),
+            to: v("0.1.0"),
+        }
+    );
+    assert!(s.state().bad.contains(&v("0.2.0")));
+
+    // Installed back at once, before anything else starts: no waiting, even with updates
+    // off.
+    s.settings(false);
+    assert_eq!(
+        bad.roll_back_now(&v("0.2.0"), &v("0.1.0")),
+        RollBack::Applied
+    );
+    assert_eq!(
+        s.events(),
+        [Event::Download(v("0.1.0"), true), Event::Apply(v("0.1.0")),]
+    );
+    let pending = s.state().pending_health.unwrap();
+    assert_eq!((pending.from, pending.to), (v("0.2.0"), v("0.1.0")));
+    assert!(pending.rollback);
+
+    // The version before starts and tells the user the update was rolled back.
+    s.settings(true);
+    let old = s.updater("0.1.0", 0);
+    assert_eq!(old.startup(), Startup::Confirm);
+    old.confirm_health();
+    assert_eq!(
+        s.events(),
+        [Event::Notice(Notice::RolledBack {
+            failed: v("0.2.0"),
+            version: v("0.1.0"),
+        })]
+    );
+    // 0.2.0 is not offered here again.
+    assert_eq!(old.check(false, None).status, UpdateStatus::UpToDate);
+    assert!(s.state().bad.contains(&v("0.2.0")));
+}
+
+#[test]
+fn a_quick_quit_is_not_a_crash() {
+    let s = Sandbox::new();
+    s.pending("0.1.0", "0.2.0", None, false);
+    for _ in 0..3 {
+        let u = s.updater("0.2.0", 0);
+        assert_eq!(u.startup(), Startup::Confirm);
+        // «Выход» within seconds, before the health check confirmed it.
+        u.ended_cleanly();
+        let pending = s.state().pending_health.unwrap();
+        assert_eq!((pending.started, pending.crashes), (None, 0));
+    }
+    assert!(s.state().bad.is_empty());
+}
+
+#[test]
+fn a_crash_then_a_healthy_run_rolls_nothing_back() {
+    let s = Sandbox::new();
+    s.pending("0.1.0", "0.2.0", None, false);
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Confirm);
+    // Crashed; then ended cleanly: the count starts again.
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Confirm);
+    assert_eq!(s.state().pending_health.unwrap().crashes, 1);
+    s.updater("0.2.0", 0).ended_cleanly();
+    assert_eq!(s.state().pending_health.unwrap().crashes, 0);
+    // Crashed once more: still one in a row.
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Confirm);
+    let u = s.updater("0.2.0", 0);
+    assert_eq!(u.startup(), Startup::Confirm);
+    assert_eq!(s.state().pending_health.unwrap().crashes, 1);
+    // This run proves healthy.
+    u.confirm_health();
+    assert_eq!(s.state().pending_health, None);
+    assert!(s.state().bad.is_empty());
+    assert_eq!(s.events(), [Event::Notice(Notice::Updated(v("0.2.0")))]);
+}
+
+#[test]
+fn a_version_marked_bad_is_rolled_back_even_after_a_clean_end() {
+    let s = Sandbox::new();
+    s.pending("0.1.0", "0.2.0", None, false);
+    let u = s.updater("0.2.0", 0);
+    assert_eq!(u.startup(), Startup::Confirm);
+    // The health check ran out while it ran; the user quit before the rollback applied.
+    u.health_failed();
+    u.ended_cleanly();
+    assert_eq!(
+        s.updater("0.2.0", 0).startup(),
+        Startup::RollBack {
+            failed: v("0.2.0"),
+            to: v("0.1.0"),
+        }
+    );
+}
+
+#[test]
+fn the_updater_thread_installs_what_check_now_found() {
+    let s = Sandbox::new();
+    s.publish(3, two_releases());
+    let u = Arc::new(s.updater("0.1.0", 0));
+    Arc::clone(&u).spawn(None);
+    assert_eq!(u.check_now(None), available("0.2.0", true));
+    let events = s.wait_for(&Event::Exit);
+    assert_eq!(
+        events,
+        [
+            Event::Download(v("0.2.0"), false),
+            Event::Busy,
+            Event::Hold,
+            Event::Apply(v("0.2.0")),
+            Event::Exit,
+        ]
+    );
+}
+
+#[test]
+fn the_updater_thread_gives_up_a_rollback_without_a_package_and_checks_at_once() {
+    let s = Sandbox::new();
+    s.publish(
+        4,
+        vec![release("0.2.0", 100, false), release("0.3.0", 100, false)],
+    );
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    let u = Arc::new(s.updater("0.2.0", 0));
+    let Startup::RollBack { failed, to } = u.startup() else {
+        panic!("no rollback");
+    };
+    Arc::clone(&u).spawn(Some((failed, to)));
+    let events = s.wait_for(&Event::Exit);
+    assert_eq!(
+        events[0],
+        Event::Notice(Notice::NoRollback {
+            failed: v("0.2.0"),
+            version: v("0.1.0"),
+        })
+    );
+    assert!(events.contains(&Event::Apply(v("0.3.0"))), "{events:?}");
+}
+
+/// A new version whose health check runs out: rolled back while it runs, by the updater's
+/// thread, with `healthy` saying what the daemon does.
+fn rolled_back_while_running(healthy: impl Fn() -> bool + Send + 'static) {
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    s.pending("0.1.0", "0.2.0", None, false);
+    let u = Arc::new(s.updater_with(
+        "0.2.0",
+        Fakes {
+            health: Some((300, 100)),
+            ..Fakes::default()
+        },
+    ));
+    assert_eq!(u.startup(), Startup::Confirm);
+    u.watch_health(healthy);
+    Arc::clone(&u).spawn(None);
+    let events = s.wait_for(&Event::Exit);
+    assert!(
+        events.contains(&Event::Download(v("0.1.0"), true)),
+        "{events:?}"
+    );
+    assert!(events.contains(&Event::Apply(v("0.1.0"))), "{events:?}");
+    assert!(s.state().bad.contains(&v("0.2.0")));
+    let pending = s.state().pending_health.unwrap();
+    assert_eq!(
+        (pending.from, pending.to, pending.rollback),
+        (v("0.2.0"), v("0.1.0"), true)
+    );
+}
+
+#[test]
+fn a_version_whose_event_loop_never_runs_is_rolled_back() {
+    rolled_back_while_running(|| false);
+}
+
+#[test]
+fn a_version_whose_servers_stop_is_rolled_back() {
+    // Healthy on the first look only: the servers came up and stopped before the check
+    // settled. Driven by the calls rather than by a timer, so a slow runner cannot let the
+    // check settle before the servers stop.
+    let first = AtomicBool::new(true);
+    rolled_back_while_running(move || first.swap(false, Ordering::SeqCst));
+}
+
+#[test]
+fn a_rollback_the_installer_refuses_is_given_up() {
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    let failing = s.updater_with(
+        "0.2.0",
+        Fakes {
+            fail_apply: true,
+            ..Fakes::default()
+        },
+    );
+    let Startup::RollBack { failed, to } = failing.startup() else {
+        panic!("no rollback");
+    };
+    assert_eq!(failing.roll_back_now(&failed, &to), RollBack::GaveUp);
+    let state = s.state();
+    assert_eq!(state.pending_health, None);
+    assert!(state.bad.contains(&v("0.2.0")));
+    failing.tell_deferred();
+    assert!(s.events().contains(&Event::Notice(Notice::RollbackFailed {
+        failed: v("0.2.0"),
+        version: v("0.1.0"),
+    })));
+    // The bad version starts normally and serves.
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Normal);
+}
+
+#[test]
+fn a_rollback_the_installer_does_not_finish_is_tried_three_times() {
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    // Each time the installer takes the rollback, fails after the exit and starts the bad
+    // version again.
+    for attempt in 1..=ROLLBACK_ATTEMPTS {
+        let bad = s.updater("0.2.0", 0);
+        let Startup::RollBack { failed, to } = bad.startup() else {
+            panic!("no rollback at attempt {attempt}");
+        };
+        assert_eq!(bad.roll_back_now(&failed, &to), RollBack::Applied);
+        assert_eq!(s.state().pending_health.unwrap().attempts, attempt);
+    }
+    assert_eq!(
+        s.events()
+            .iter()
+            .filter(|e| matches!(e, Event::Apply(_)))
+            .count(),
+        3
+    );
+    // No fourth attempt: the bad version starts normally, and the user is told once.
+    let bad = s.updater("0.2.0", 0);
+    assert_eq!(bad.startup(), Startup::Normal);
+    let state = s.state();
+    assert_eq!(state.pending_health, None);
+    assert!(state.bad.contains(&v("0.2.0")));
+    assert_eq!(s.events(), []);
+    bad.tell_deferred();
+    bad.tell_deferred();
+    assert_eq!(
+        s.events(),
+        [Event::Notice(Notice::RollbackFailed {
+            failed: v("0.2.0"),
+            version: v("0.1.0"),
+        })]
+    );
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Normal);
+}
+
+#[test]
+fn a_rollback_the_index_has_no_package_for_is_given_up_and_the_checks_go_on() {
+    let s = Sandbox::new();
+    // 0.1.0 is gone from the index; 0.3.0 fixes 0.2.0.
+    s.publish(
+        4,
+        vec![release("0.2.0", 100, false), release("0.3.0", 100, false)],
+    );
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    let u = s.updater("0.2.0", 0);
+    let Startup::RollBack { failed, to } = u.startup() else {
+        panic!("no rollback");
+    };
+    assert_eq!(u.roll_back_now(&failed, &to), RollBack::GaveUp);
+    let state = s.state();
+    assert_eq!(state.pending_health, None);
+    assert!(state.bad.contains(&v("0.2.0")));
+    // Told once, deferred until the windows' event loop runs (the tray is not up yet).
+    assert_eq!(s.events(), []);
+    let notice = Notice::NoRollback {
+        failed: v("0.2.0"),
+        version: v("0.1.0"),
+    };
+    assert_eq!(*lock(&u.deferred), std::slice::from_ref(&notice));
+    u.tell_deferred();
+    assert_eq!(s.events(), [Event::Notice(notice.clone())]);
+    // No rollback any more at the next start; the next check offers the fix.
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Normal);
+    assert_eq!(u.check(false, None).status, available("0.3.0", true));
+
+    // Given up while running: told at once.
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    assert_eq!(
+        u.roll_back(&failed, &to, true, STARTUP_BUDGET),
+        RollBack::GaveUp
+    );
+    assert!(s.events().contains(&Event::Notice(notice)));
+}
+
+#[test]
+fn an_unreadable_index_retries_the_rollback() {
+    let s = Sandbox::new();
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    let u = s.updater("0.2.0", 0);
+    let Startup::RollBack { failed, to } = u.startup() else {
+        panic!("no rollback");
+    };
+    assert_eq!(u.roll_back_now(&failed, &to), RollBack::Retry);
+    assert!(s.state().pending_health.is_some());
+}
+
+#[test]
+fn nothing_is_rolled_back_to_a_version_that_failed_too() {
+    let s = Sandbox::new();
+    let mut state = s.state();
+    state.bad.insert(v("0.2.0"));
+    state.save(s.dir.path()).unwrap();
+    // The rollback from 0.2.0 to 0.1.0 did not prove healthy either.
+    s.pending("0.2.0", "0.1.0", Some(TimeDuration::minutes(2)), true);
+    let u = s.updater("0.1.0", 0);
+    assert_eq!(u.startup(), Startup::Normal);
+    let state = s.state();
+    assert_eq!(state.pending_health, None);
+    assert!(state.bad.contains(&v("0.1.0")) && state.bad.contains(&v("0.2.0")));
+}
+
+#[test]
+fn an_update_that_did_not_install_is_forgotten() {
+    let s = Sandbox::new();
+    s.pending("0.1.0", "0.2.0", None, false);
+    let u = s.updater("0.1.0", 0);
+    assert_eq!(u.startup(), Startup::Normal);
+    assert_eq!(s.state().pending_health, None);
+    assert!(s.state().bad.is_empty());
+}
+
+#[test]
+fn a_check_does_not_undo_what_other_threads_write_meanwhile() {
+    let s = Sandbox::new();
+    s.publish(9, two_releases());
+    let u = s.updater("0.1.0", 0);
+    // While the index downloads, an update is recorded (another thread's `install`).
+    let dir = s.dir.path().to_owned();
+    *lock(&s.transport.hook) = Some(Box::new(move || {
+        let mut state = State::load(&dir).unwrap();
+        state.pending_health = Some(PendingHealth {
+            from: v("0.1.0"),
+            to: v("0.2.0"),
+            applied: OffsetDateTime::now_utc(),
+            started: None,
+            crashes: 0,
+            rollback: false,
+            attempts: 0,
+        });
+        state.save(&dir).unwrap();
+    }));
+    u.check_now(None);
+    let state = s.state();
+    assert_eq!(state.last_seq[&Channel::Stable], 9);
+    assert!(state.pending_health.is_some(), "the recorded update stays");
+
+    // While it downloads again (a new seq), the health is confirmed.
+    s.publish(10, two_releases());
+    let dir = s.dir.path().to_owned();
+    *lock(&s.transport.hook) = Some(Box::new(move || {
+        let mut state = State::load(&dir).unwrap();
+        state.pending_health = None;
+        state.save(&dir).unwrap();
+    }));
+    u.check_now(None);
+    let state = s.state();
+    assert_eq!(state.last_seq[&Channel::Stable], 10);
+    assert_eq!(state.pending_health, None, "the confirmation stays");
+}
+
+/// The failure of the check, which must be one of refusal: shown, never retried soon.
+fn refusal(checked: &Checked) -> String {
+    let UpdateStatus::Failed(e) = &checked.status else {
+        panic!("{:?}", checked.status);
+    };
+    assert!(checked.plan.is_none() && !checked.retry_soon, "{e}");
+    e.clone()
+}
+
+#[test]
+fn a_refused_index_changes_nothing_and_is_not_notified() {
+    let s = Sandbox::new();
+    let u = s.updater("0.1.0", 0);
+
+    // A repository of other keys than the root built in.
+    let hostile = Server::new();
+    *hostile.repo() = oncl_update::tuf::testing::Repo::with_seed(41);
+    let body = serde_json::to_vec(&Index {
+        schema: 1,
+        channel: Channel::Stable,
+        seq: 7,
+        generated: OffsetDateTime::now_utc(),
+        expires: OffsetDateTime::now_utc() + TimeDuration::days(30),
+        core: two_releases(),
+        extension: None,
+        plugins: Vec::new(),
+    })
+    .unwrap();
+    hostile.publish(&s.transport, Channel::Stable, &body);
+    let e = refusal(&u.check(false, None));
+    assert!(
+        e.contains("valid signatures from distinct trusted keys"),
+        "{e}"
+    );
+    assert!(
+        s.state().last_seq.is_empty(),
+        "seq is saved only once verified"
+    );
+
+    // An index file that is not the one the targets metadata lists.
+    s.publish(7, two_releases());
+    let path = url(&s.server.repo().index_file_path(Channel::Stable));
+    let mut body = lock(&s.transport.bodies)[&path].1.clone();
+    body[10] ^= 1;
+    s.transport.serve(&path, &body);
+    let e = refusal(&u.check(false, None));
+    assert!(e.contains("does not match"), "{e}");
+    assert!(s.state().last_seq.is_empty());
+
+    // An older seq than one accepted.
+    s.publish(7, two_releases());
+    assert_eq!(u.check(false, None).status, available("0.2.0", true));
+    s.publish(6, two_releases());
+    let e = refusal(&u.check(false, None));
+    assert!(e.contains("older than the last seen 7"), "{e}");
+    // The same seq again is the same index: accepted.
+    s.publish(7, two_releases());
+    assert_eq!(u.check(false, None).status, available("0.2.0", true));
+    assert_eq!(s.state().last_seq[&Channel::Stable], 7);
+
+    // Only the first offer of 0.2.0 was told; no failure was.
+    assert_eq!(
+        s.events(),
+        [Event::Notice(Notice::Checked(available("0.2.0", true)))]
+    );
+}
+
+#[test]
+fn a_rolled_back_timestamp_is_refused_and_nothing_is_installed() {
+    let s = Sandbox::new();
+    let u = s.updater("0.1.0", 0);
+    s.publish(7, two_releases());
+    let old = s
+        .server
+        .repo()
+        .get("metadata/timestamp.json")
+        .unwrap()
+        .to_vec();
+    s.publish(8, two_releases());
+    assert_eq!(u.check(false, None).status, available("0.2.0", true));
+    assert_eq!(s.state().last_seq[&Channel::Stable], 8);
+    s.events();
+
+    // The repository serves the older timestamp again (a replay of what was valid).
+    s.transport.serve(&timestamp_url(), &old);
+    let checked = u.check(false, None);
+    let e = refusal(&checked);
+    assert!(e.contains("was trusted before"), "{e}");
+    assert_eq!(u.status(), UpdateStatus::Failed(e));
+    assert_eq!(s.events(), []);
+    assert_eq!(s.state().last_seq[&Channel::Stable], 8);
+}
+
+#[test]
+fn an_expired_timestamp_fails_the_check_without_installing() {
+    let s = Sandbox::new();
+    // Signed 8 days ago: the timestamp's 7 days are over, whatever else is fresh.
+    s.server.repo().signed_at = OffsetDateTime::now_utc() - TimeDuration::days(8);
+    s.publish(5, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let checked = u.check(false, None);
+    let e = refusal(&checked);
+    assert!(e.contains("timestamp metadata expired"), "{e}");
+    assert_eq!(s.events(), []);
+    assert!(s.state().last_seq.is_empty());
+    assert!(s.state().pending_health.is_none());
+    // Only the repository's own check expires: an index generated long ago is not refused
+    // while the roles hold.
+    let fresh = Sandbox::new();
+    fresh.publish_aged(5, two_releases(), TimeDuration::days(45));
+    let u = fresh.updater("0.1.0", 0);
+    assert_eq!(u.check(false, None).status, available("0.2.0", true));
+}
+
+#[test]
+fn an_unreachable_index_is_tried_again_soon_and_quietly() {
+    let s = Sandbox::new();
+    let u = s.updater("0.1.0", 0);
+    let checked = u.check(false, None);
+    assert!(checked.retry_soon && checked.plan.is_none());
+    assert!(matches!(checked.status, UpdateStatus::Failed(_)));
+    assert_eq!(s.events(), []);
+}
+
+#[test]
+fn a_revoked_current_version_moves_to_the_newest_one_not_revoked() {
+    let s = Sandbox::new();
+    // 0.1.0 is not in the rollout any more; it is still where a revoked 0.2.0 goes.
+    s.publish(
+        5,
+        vec![release("0.1.0", 0, false), release("0.2.0", 100, true)],
+    );
+    let u = s.updater("0.2.0", 0);
+    let checked = u.check(false, None);
+    assert_eq!(checked.status, available("0.1.0", true));
+    let plan = checked.plan.unwrap();
+    assert!(plan.downgrade && !plan.rollback);
+    assert_eq!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert_eq!(s.events()[1], Event::Download(v("0.1.0"), true));
+}
+
+#[test]
+fn the_rollout_holds_a_version_back() {
+    let s = Sandbox::new();
+    s.publish(
+        5,
+        vec![release("0.1.0", 100, false), release("0.2.0", 0, false)],
+    );
+    let u = s.updater("0.1.0", 0);
+    let checked = u.check(false, None);
+    assert_eq!(checked.status, UpdateStatus::UpToDate);
+    assert!(checked.plan.is_none());
+    assert_eq!(s.events(), []);
+}
+
+#[test]
+fn with_updates_off_only_a_check_now_looks_and_nothing_is_installed() {
+    let s = Sandbox::new();
+    s.settings(false);
+    s.publish(5, two_releases());
+    let u = s.updater("0.1.0", 0);
+    let checked = u.check(false, None);
+    assert_eq!(checked.status, UpdateStatus::NotChecked);
+    assert!(s.transport.asked().is_empty());
+
+    assert_eq!(u.check_now(None), available("0.2.0", false));
+    assert!(lock(&u.queue).plan.is_none());
+    assert_eq!(s.events(), [], "the window shows it; no notification");
+
+    // The form's unsaved settings: checked with them, but nothing is to be installed
+    // until they are saved.
+    let form = UpdateSettings {
+        enabled: true,
+        channel: Channel::Stable,
+        check_revocations: true,
+    };
+    assert_eq!(u.check_now(Some(form)), available("0.2.0", false));
+    assert!(lock(&u.queue).plan.is_none());
+    s.settings(true);
+    assert_eq!(u.check_now(Some(form)), available("0.2.0", true));
+    let far = SystemTime::now() + Duration::from_secs(3600);
+    let Job::Plan(plan) = u.next(far) else {
+        panic!("no plan");
+    };
+    // Turned off again before it applied: not applied.
+    s.settings(false);
+    assert_ne!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert_eq!(s.state().pending_health, None);
+    s.settings(true);
+    assert_eq!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+}
+
+#[test]
+fn a_failed_download_or_apply_leaves_nothing_pending() {
+    let s = Sandbox::new();
+    s.publish(5, two_releases());
+    let u = s.updater_with(
+        "0.1.0",
+        Fakes {
+            fail_download: true,
+            ..Fakes::default()
+        },
+    );
+    let plan = u.check(false, None).plan.unwrap();
+    assert_ne!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert!(
+        matches!(u.status(), UpdateStatus::InstallFailed { version, error } if version == "0.2.0" && error.contains("sha256"))
+    );
+    assert_eq!(s.state().pending_health, None);
+
+    let u = s.updater_with(
+        "0.1.0",
+        Fakes {
+            fail_apply: true,
+            ..Fakes::default()
+        },
+    );
+    assert_ne!(u.install(&plan, true, DOWNLOAD_TIMEOUT), Installed::Applied);
+    assert_eq!(s.state().pending_health, None);
+    assert!(!s.events().contains(&Event::Exit));
+}
+
+#[test]
+fn a_broken_state_is_replaced() {
+    let s = Sandbox::new();
+    std::fs::create_dir_all(s.dir.path().join("update")).unwrap();
+    std::fs::write(State::path(s.dir.path()), "not json").unwrap();
+    s.publish(5, vec![release("0.1.0", 100, false)]);
+    let u = s.updater("0.1.0", 0);
+    assert_eq!(u.check(false, None).status, UpdateStatus::UpToDate);
+    assert_eq!(s.state().last_seq[&Channel::Stable], 5);
+}
+
+/// Keeps `path` unreadable while it lives, not damaged: locked by another program (Windows,
+/// a sharing violation) or without read permission (Unix).
+struct Unreadable {
+    #[cfg(windows)]
+    _lock: std::fs::File,
+    #[cfg(unix)]
+    path: std::path::PathBuf,
+}
+
+impl Unreadable {
+    fn new(path: &std::path::Path) -> Unreadable {
+        #[cfg(windows)]
+        let guard = {
+            use std::os::windows::fs::OpenOptionsExt;
+            Unreadable {
+                _lock: std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(path)
+                    .unwrap(),
+            }
+        };
+        #[cfg(unix)]
+        let guard = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o200)).unwrap();
+            Unreadable {
+                path: path.to_owned(),
+            }
+        };
+        let e = std::fs::read(path).expect_err("the file is still readable (run as non-root)");
+        assert_ne!(e.kind(), std::io::ErrorKind::InvalidData);
+        guard
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Unreadable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+#[test]
+fn a_state_that_cannot_be_read_is_left_as_it_is() {
+    let s = Sandbox::new();
+    s.publish(5, two_releases());
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    let mut state = s.state();
+    state.bad.insert(v("0.1.5"));
+    state.last_seq.insert(Channel::Stable, 4);
+    state.save(s.dir.path()).unwrap();
+    let path = State::path(s.dir.path());
+    let before = std::fs::read(&path).unwrap();
+
+    {
+        let _unreadable = Unreadable::new(&path);
+        let u = s.updater("0.2.0", 0);
+        // No health watch, no rollback this run; nothing is written.
+        assert_eq!(u.startup(), Startup::Normal);
+        u.ended_cleanly();
+        u.confirm_health();
+        assert_eq!(s.events(), [], "no update notice from an unsaved change");
+        // A check cannot use the index without its replay floor: tried again soon.
+        let checked = u.check(false, None);
+        assert!(
+            matches!(checked.status, UpdateStatus::Failed(_)),
+            "{:?}",
+            checked.status
+        );
+        assert!(checked.retry_soon);
+        assert!(checked.plan.is_none());
+    }
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "the bytes are unchanged"
+    );
+    let state = s.state();
+    assert!(state.bad.contains(&v("0.1.5")));
+    assert_eq!(state.last_seq[&Channel::Stable], 4);
+    assert!(state.pending_health.is_some());
+
+    // Readable again: the run goes on from it.
+    assert_eq!(
+        s.updater("0.2.0", 0).startup(),
+        Startup::RollBack {
+            failed: v("0.2.0"),
+            to: v("0.1.0"),
+        }
+    );
+}
+
+#[test]
+fn an_unpublished_channel_is_not_tried_again_soon() {
+    let s = Sandbox::new();
+    s.transport.reply(&url("metadata/2.root.json"), 404, b"");
+    s.transport.reply(&timestamp_url(), 404, b"Not Found");
+    let u = s.updater("0.1.0-alpha.1", 0);
+    let checked = u.check(false, None);
+    assert_eq!(checked.status, UpdateStatus::NotPublished(Channel::Stable));
+    assert!(!checked.retry_soon, "the normal interval");
+    assert_eq!(s.events(), [], "no notice");
+    assert_eq!(u.status(), UpdateStatus::NotPublished(Channel::Stable));
+
+    // A repository with only the other channel's index has none for this one.
+    s.server.publish(&s.transport, Channel::Beta, b"{}");
+    let checked = u.check(false, None);
+    assert_eq!(checked.status, UpdateStatus::NotPublished(Channel::Stable));
+    assert!(!checked.retry_soon);
+
+    // Other failures still retry soon.
+    s.transport.reply(&timestamp_url(), 503, b"");
+    let checked = u.check(false, None);
+    assert!(matches!(checked.status, UpdateStatus::Failed(e) if e.contains("HTTP 503")));
+    assert!(checked.retry_soon);
+}
+
+#[test]
+fn a_rollback_whose_package_went_is_downloaded_again_within_its_attempts() {
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    // Another start of the program cleaned the downloaded package before the hand-off.
+    let bad = s.updater_with(
+        "0.2.0",
+        Fakes {
+            missing: 1,
+            ..Fakes::default()
+        },
+    );
+    let Startup::RollBack { failed, to } = bad.startup() else {
+        panic!("no rollback");
+    };
+    assert_eq!(
+        bad.roll_back_now(&failed, &to),
+        RollBack::Retry,
+        "not given up"
+    );
+    let pending = s.state().pending_health.unwrap();
+    assert!(pending.rollback && pending.attempts == 1, "{pending:?}");
+    assert!(
+        matches!(bad.status(), UpdateStatus::InstallFailed { version, .. } if version == "0.1.0")
+    );
+    assert!(!s.state().bad.contains(&v("0.1.0")));
+    // The next try downloads it again and hands it over; the attempt counts.
+    assert_eq!(bad.roll_back_now(&failed, &to), RollBack::Applied);
+    assert_eq!(s.state().pending_health.unwrap().attempts, 2);
+    let downloads = s
+        .events()
+        .iter()
+        .filter(|e| matches!(e, Event::Download(..)))
+        .count();
+    assert_eq!(downloads, 2);
+
+    // Always gone: the attempts cap still ends it at a start.
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    for _ in 0..ROLLBACK_ATTEMPTS {
+        let bad = s.updater_with(
+            "0.2.0",
+            Fakes {
+                missing: usize::MAX,
+                ..Fakes::default()
+            },
+        );
+        let Startup::RollBack { failed, to } = bad.startup() else {
+            panic!("no rollback");
+        };
+        assert_eq!(bad.roll_back_now(&failed, &to), RollBack::Retry);
+    }
+    assert_eq!(s.updater("0.2.0", 0).startup(), Startup::Normal);
+    assert!(s.state().pending_health.is_none());
+}
+
+#[test]
+fn a_rollback_at_the_start_stays_within_its_budget() {
+    let s = Sandbox::new();
+    s.publish(4, two_releases());
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    let bad = s.updater("0.2.0", 0);
+    let Startup::RollBack { failed, to } = bad.startup() else {
+        panic!("no rollback");
+    };
+    assert_eq!(bad.roll_back_now(&failed, &to), RollBack::Applied);
+    let index = s.transport.timeouts();
+    let package = lock(&s.download_timeouts).clone();
+    // The next root, the timestamp, snapshot, targets and the index: one deadline for all.
+    assert_eq!((index.len(), package.len()), (5, 1));
+    assert!(index.iter().all(|t| *t <= STARTUP_BUDGET), "{index:?}");
+    assert!(package[0] <= STARTUP_BUDGET, "{package:?}");
+
+    // The background retry has the long download time.
+    s.pending("0.1.0", "0.2.0", Some(TimeDuration::minutes(2)), false);
+    assert_eq!(
+        bad.roll_back(&failed, &to, true, INDEX_TIMEOUT + DOWNLOAD_TIMEOUT),
+        RollBack::Applied
+    );
+    let package = lock(&s.download_timeouts).clone();
+    assert!(
+        package[1] > DOWNLOAD_TIMEOUT - Duration::from_secs(60),
+        "{package:?}"
+    );
+}
+
+#[test]
+fn availability_needs_a_flavor_an_installation_and_the_trust_root() {
+    let s = Sandbox::new();
+    let repository = Some(s.repository());
+    let installed = || Ok::<_, String>(());
+    let not_installed = || Err::<(), _>("not installed".to_owned());
+    assert_eq!(
+        availability(repository.clone(), None, None, installed).err(),
+        Some(UpdateStatus::NotInstalled)
+    );
+    assert_eq!(
+        availability(
+            repository.clone(),
+            Some(Flavor::LinuxX64),
+            None,
+            not_installed
+        )
+        .err(),
+        Some(UpdateStatus::NotInstalled)
+    );
+    // A package manager's copy is off whatever else holds: Velopack is not even asked.
+    assert_eq!(
+        availability(
+            repository.clone(),
+            Some(Flavor::LinuxX64),
+            Some("pacman"),
+            || -> Result<(), String> { panic!("Velopack asked for a package manager's copy") }
+        )
+        .err(),
+        Some(UpdateStatus::PackageManaged("pacman".to_owned()))
+    );
+    // No trust root built in: updates are off.
+    assert_eq!(
+        availability(None, Some(Flavor::LinuxX64), None, installed).err(),
+        Some(UpdateStatus::NoKeys)
+    );
+    let (_, flavor, ()) = availability(repository, Some(Flavor::Osx), None, installed).unwrap();
+    assert_eq!(flavor, Flavor::Osx);
+    // Off: the window says why, and a check says the same.
+    let off = UpdaterHandle::Off(UpdateStatus::NoKeys);
+    assert_eq!(off.check_now(None), UpdateStatus::NoKeys);
+}
+
+#[test]
+fn checks_are_spread() {
+    for _ in 0..100 {
+        let d = jitter(CHECK_EVERY);
+        assert!(CHECK_EVERY.0 <= d && d <= CHECK_EVERY.1, "{d:?}");
+        let d = jitter(FIRST_CHECK);
+        assert!(FIRST_CHECK.0 <= d && d <= FIRST_CHECK.1, "{d:?}");
+    }
+    assert_eq!(index_base(), INDEX_BASE);
+}

@@ -1,0 +1,302 @@
+// The settings window: language, the size of the windows and their text, our autostart,
+// hardware tokens, the proxy, the updates and the plugins' revocations (saved together),
+// «Check now» for updates, and, kept under «Advanced», the original NCALayer's autostart and
+// the browser extension's registration (acted on at once). The states and messages are
+// composed in Rust.
+
+import { Button, CheckBox, ComboBox, GroupBox } from "std-widgets.slint";
+import { ActionBar, BusyRow, DialogScroll, Disclosure, EscapeScope, FieldLabel, Hint, Metrics, StatusArea, TextField } from "common.slint";
+
+export component SettingsWindow inherits Window {
+    title: @tr("OpenNCALayer settings");
+    min-width: Metrics.form-min-width;
+    min-height: Metrics.min-height;
+
+    // 0: the system's language, 1: Russian, 2: Kazakh, 3: English.
+    in-out property <int> language;
+    // 0: 100%, 1: 125%, 2: 150%, 3: 175%, 4: 200% of the system's scale.
+    in-out property <int> scale;
+    in-out property <bool> autostart;
+    // 0: no proxy, 1: the system's proxy, 2: the proxy of `proxy-url`.
+    in-out property <int> proxy-mode;
+    in-out property <string> proxy-url;
+    in-out property <bool> updates-enabled;
+    // 0: stable, 1: beta.
+    in-out property <int> update-channel;
+    // «Check plugin revocations» as saved; shown ticked and inactive while updates are on.
+    in-out property <bool> check-revocations: true;
+    // Hardware tokens and ID cards (experimental).
+    in-out property <bool> tokens-enabled;
+    // What the updater can do and found last.
+    in property <string> update-state;
+    // Whether this installation can update itself («Check now» works).
+    in property <bool> can-check-updates;
+    // The outcome of the last action, and whether it failed.
+    in property <string> message;
+    in property <bool> message-is-error;
+    // An action runs (or the states load): the buttons wait.
+    in property <bool> busy;
+
+    in property <string> original-state;
+    in property <bool> can-disable-original;
+    in property <bool> can-restore-original;
+    in property <string> extension-state;
+    in property <bool> can-unregister-extension;
+    // «Save» and «Close» are inside the window, whatever the texts and the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    callback save();
+    callback dismiss();
+    callback disable-original();
+    callback restore-original();
+    callback register-extension();
+    callback unregister-extension();
+    callback check-updates();
+
+    forward-focus: language-box;
+    EscapeScope {
+        escape => {
+            // Closing waits for the running action: its outcome is shown here.
+            if !root.busy {
+                root.dismiss();
+            }
+        }
+        VerticalLayout {
+            padding: Metrics.pad;
+            spacing: Metrics.gap;
+            DialogScroll {
+                GroupBox {
+                    vertical-stretch: 0;
+                    title: @tr("General");
+                    VerticalLayout {
+                        spacing: Metrics.gap;
+                        FieldLabel {
+                            text: @tr("Language");
+                        }
+
+                        language-box := ComboBox {
+                            enabled: !root.busy;
+                            model: [@tr("As in the system"), "Русский", "Қазақша", "English"];
+                            current-index <=> root.language;
+                            accessible-label: @tr("Language");
+                        }
+
+                        FieldLabel {
+                            text: @tr("Size of the windows and the text");
+                        }
+
+                        ComboBox {
+                            enabled: !root.busy;
+                            model: ["100%", "125%", "150%", "175%", "200%"];
+                            current-index <=> root.scale;
+                            accessible-label: @tr("Size of the windows and the text");
+                        }
+
+                        Hint {
+                            text: @tr("On top of the system's own scale; every window takes it as soon as it is saved.");
+                        }
+
+                        CheckBox {
+                            text: @tr("Start at login");
+                            enabled: !root.busy;
+                            checked <=> root.autostart;
+                        }
+
+                        CheckBox {
+                            text: @tr("Tokens and ID cards (experimental)");
+                            enabled: !root.busy;
+                            checked <=> root.tokens-enabled;
+                        }
+
+                        Hint {
+                            text: @tr("Sites will see the connected tokens and the ID card's details without asking, as with the original NCALayer.");
+                        }
+                    }
+                }
+
+                GroupBox {
+                    vertical-stretch: 0;
+                    title: @tr("Proxy for time stamps, OCSP and CRL");
+                    VerticalLayout {
+                        spacing: Metrics.gap;
+                        ComboBox {
+                            enabled: !root.busy;
+                            model: [@tr("No proxy"), @tr("System proxy"), @tr("This proxy:")];
+                            current-index <=> root.proxy-mode;
+                            accessible-label: @tr("Proxy for time stamps, OCSP and CRL");
+                        }
+
+                        TextField {
+                            label: @tr("Proxy address");
+                            field-enabled: !root.busy && root.proxy-mode == 2;
+                            placeholder: "http://proxy.example:3128";
+                            text <=> root.proxy-url;
+                        }
+
+                        Hint {
+                            text: @tr("HTTP proxies only; SOCKS is not supported.");
+                        }
+                    }
+                }
+
+                GroupBox {
+                    vertical-stretch: 0;
+                    title: @tr("Updates");
+                    VerticalLayout {
+                        spacing: Metrics.gap;
+                        CheckBox {
+                            text: @tr("Update automatically");
+                            enabled: !root.busy;
+                            checked <=> root.updates-enabled;
+                        }
+
+                        if root.updates-enabled: CheckBox {
+                            text: @tr("Check plugin revocations");
+                            enabled: false;
+                            checked: true;
+                        }
+
+                        if root.updates-enabled: Hint {
+                            text: @tr("Included in automatic updates");
+                        }
+
+                        if !root.updates-enabled: CheckBox {
+                            text: @tr("Check plugin revocations");
+                            enabled: !root.busy;
+                            checked <=> root.check-revocations;
+                        }
+
+                        Hint {
+                            text: @tr("Every few hours OpenNCALayer contacts arynyklas.github.io and turns off the plugins their publisher or OpenNCALayer revoked. No new versions are installed by it.");
+                        }
+
+                        FieldLabel {
+                            text: @tr("Channel");
+                        }
+
+                        ComboBox {
+                            enabled: !root.busy;
+                            model: [@tr("Stable"), @tr("Beta")];
+                            current-index <=> root.update-channel;
+                            accessible-label: @tr("Channel");
+                        }
+
+                        Text {
+                            text: root.update-state;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: @tr("Check now");
+                                enabled: !root.busy && root.can-check-updates;
+                                clicked => {
+                                    root.check-updates();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                advanced := Disclosure {
+                    title: @tr("Advanced");
+                }
+
+                if advanced.open: VerticalLayout {
+                    spacing: Metrics.gap;
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: @tr("Original NCALayer");
+                        VerticalLayout {
+                            spacing: Metrics.gap;
+                            Text {
+                                text: root.original-state;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: Metrics.gap;
+                                alignment: start;
+                                Button {
+                                    text: @tr("Disable the original's autostart");
+                                    enabled: !root.busy && root.can-disable-original;
+                                    clicked => {
+                                        root.disable-original();
+                                    }
+                                }
+
+                                Button {
+                                    text: @tr("Restore the original");
+                                    enabled: !root.busy && root.can-restore-original;
+                                    clicked => {
+                                        root.restore-original();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: @tr("Browser extension");
+                        VerticalLayout {
+                            spacing: Metrics.gap;
+                            Text {
+                                text: root.extension-state;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: Metrics.gap;
+                                alignment: start;
+                                Button {
+                                    text: @tr("Register");
+                                    enabled: !root.busy;
+                                    clicked => {
+                                        root.register-extension();
+                                    }
+                                }
+
+                                Button {
+                                    text: @tr("Remove");
+                                    enabled: !root.busy && root.can-unregister-extension;
+                                    clicked => {
+                                        root.unregister-extension();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.busy: BusyRow {
+                label: @tr("Please wait…");
+            }
+            if !root.message.is-empty: StatusArea {
+                message: root.message;
+                error: root.message-is-error;
+            }
+            actions := ActionBar {
+                Button {
+                    text: @tr("Save");
+                    primary: true;
+                    enabled: !root.busy;
+                    clicked => {
+                        root.save();
+                    }
+                }
+
+                Button {
+                    text: @tr("Close");
+                    // Closing waits for the running action: its outcome is shown here.
+                    enabled: !root.busy;
+                    clicked => {
+                        root.dismiss();
+                    }
+                }
+            }
+        }
+    }
+}

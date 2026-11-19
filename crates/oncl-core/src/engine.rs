@@ -1,0 +1,369 @@
+use crate::{
+    Action, ExecutionGrant, OperationContext, OperationError, OperationId, OperationPolicy,
+};
+use oncl_pki::digest::{DigestValue, hash_source};
+use oncl_pki::io::Source;
+use oncl_pki::key::HashAlg;
+use oncl_pki::resource::{OperationControl, ResourceLimits, SharedBudget};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+/// Only dependencies used by implemented methods are configured. Hash needs no
+/// keys, temporary store, network, GUI, or async runtime. Reuse one engine, or
+/// attach the application's one shared budget to every engine with the builder.
+#[derive(Debug)]
+pub struct EngineServices {
+    limits: ResourceLimits,
+    shared: Option<Arc<SharedBudget>>,
+    keys: Option<crate::keys::KeyServices>,
+    validation: Option<Arc<crate::ValidationServices>>,
+    temporary: Option<oncl_pki::io::TemporaryStore>,
+    cades: Option<crate::CadesConfiguration>,
+    metadata: Option<Arc<dyn crate::ReadMetadataProvider>>,
+    inspection_limits: oncl_pki::info::InspectionLimits,
+    #[cfg(feature = "plugins")]
+    plugins: Option<crate::plugins::PluginRegistry>,
+    #[cfg(feature = "plugins")]
+    plugin_guard: Option<Arc<crate::plugins::PluginConsentGuard>>,
+}
+impl EngineServices {
+    pub fn hash_only(limits: ResourceLimits) -> Self {
+        Self {
+            limits,
+            shared: None,
+            keys: None,
+            validation: None,
+            temporary: None,
+            cades: None,
+            metadata: None,
+            inspection_limits: oncl_pki::info::InspectionLimits::default(),
+            #[cfg(feature = "plugins")]
+            plugins: None,
+            #[cfg(feature = "plugins")]
+            plugin_guard: None,
+        }
+    }
+    pub fn with_shared_budget(mut self, budget: Arc<SharedBudget>) -> Self {
+        self.shared = Some(budget);
+        self
+    }
+    /// Configure real source resolution and an explicit host authority/audit guard.
+    pub fn with_keys(
+        mut self,
+        provider: Arc<dyn crate::keys::KeyProvider>,
+        guard: Arc<dyn crate::keys::KeyUseGuard>,
+    ) -> Self {
+        self.keys = Some(crate::keys::KeyServices { provider, guard });
+        #[cfg(feature = "plugins")]
+        {
+            // The last key configuration wins as a whole: a document guard here means no
+            // plugin guard (an approved plugin call needs `with_plugin_keys`).
+            self.plugin_guard = None;
+        }
+        self
+    }
+    /// Key sources for an engine whose key uses are those of plugins in the manual window: the
+    /// only guard is `guard`, which refuses every key use that is not for an unspent,
+    /// unexpired [`crate::plugins::PluginApproval`] granted to it. [`Engine::plugin_call_approved`]
+    /// grants Core-issued approvals to this guard and revokes them when the call ends; an
+    /// engine configured with [`EngineServices::with_keys`] cannot run an approved call.
+    /// Keep documents on another engine (their guard refuses a plugin ticket, this one
+    /// refuses everything without one).
+    ///
+    /// Give each engine its own guard: the guard has one approval slot, so two engines sharing
+    /// one clobber each other's approval (the key use fails closed, a denial of service).
+    #[cfg(feature = "plugins")]
+    pub fn with_plugin_keys(
+        mut self,
+        provider: Arc<dyn crate::keys::KeyProvider>,
+        guard: Arc<crate::plugins::PluginConsentGuard>,
+    ) -> Self {
+        self.keys = Some(crate::keys::KeyServices {
+            provider,
+            guard: guard.clone(),
+        });
+        self.plugin_guard = Some(guard);
+        self
+    }
+    pub fn with_validation(mut self, services: crate::ValidationServices) -> Self {
+        self.validation = Some(Arc::new(services));
+        self
+    }
+    /// Explicit host document scratch namespace; never an implicit filesystem default.
+    pub fn with_temporary_store(mut self, store: oncl_pki::io::TemporaryStore) -> Self {
+        self.temporary = Some(store);
+        self
+    }
+    pub fn with_cades(mut self, configuration: crate::CadesConfiguration) -> Self {
+        self.cades = Some(configuration);
+        self
+    }
+    pub fn with_metadata_provider(
+        mut self,
+        provider: Arc<dyn crate::ReadMetadataProvider>,
+    ) -> Self {
+        self.metadata = Some(provider);
+        self
+    }
+    /// Trusted host resource profile, never selected by a container/request.
+    pub fn with_inspection_limits(mut self, limits: oncl_pki::info::InspectionLimits) -> Self {
+        self.inspection_limits = limits;
+        self
+    }
+    #[cfg(feature = "plugins")]
+    pub fn with_plugins(mut self, plugins: crate::plugins::PluginRegistry) -> Self {
+        self.plugins = Some(plugins);
+        self
+    }
+}
+
+#[derive(Debug)]
+pub struct Engine {
+    limits: ResourceLimits,
+    budget: Arc<SharedBudget>,
+    pub(crate) identity: Arc<()>,
+    pub(crate) keys: Option<crate::keys::KeyServices>,
+    pub(crate) validation: Option<Arc<crate::ValidationServices>>,
+    pub(crate) temporary: Option<oncl_pki::io::TemporaryStore>,
+    pub(crate) cades: Option<crate::CadesConfiguration>,
+    pub(crate) metadata: Option<Arc<dyn crate::ReadMetadataProvider>>,
+    pub(crate) inspection_limits: oncl_pki::info::InspectionLimits,
+    #[cfg(feature = "plugins")]
+    pub(crate) plugins: Option<crate::plugins::PluginRegistry>,
+    #[cfg(feature = "plugins")]
+    pub(crate) plugin_guard: Option<Arc<crate::plugins::PluginConsentGuard>>,
+    /// Held for the whole of an approved plugin call: the guard has one approval slot.
+    #[cfg(feature = "plugins")]
+    pub(crate) approved_call: std::sync::Mutex<()>,
+    activity: Option<Arc<crate::activity::ActivityGate>>,
+}
+
+/// One original invocation root admitted for bounded metadata intake, without
+/// any cryptographic/key authority. Consuming it is the only context transition.
+pub struct OperationAdmission {
+    id: OperationId,
+    owner: Arc<()>,
+    scope: oncl_pki::resource::ResourceScope,
+    original_scope: oncl_pki::resource::ResourceScope,
+}
+impl OperationAdmission {
+    pub fn id(&self) -> OperationId {
+        self.id
+    }
+    pub fn resources(&mut self) -> &mut oncl_pki::resource::ResourceScope {
+        &mut self.scope
+    }
+    /// Takes the `max_in_flight` slot of an admission made with [`Engine::admit_intake`].
+    /// `CapacityExceeded` when all are taken (nothing changes, the call may be repeated);
+    /// `Ok` when the admission holds one already. [`Engine::begin_admitted`] takes the slot
+    /// itself when this was not called, so this exists to wait for a slot while the intake
+    /// (spooled documents) is kept.
+    pub fn occupy_slot(&self) -> Result<(), OperationError> {
+        self.scope.occupy_slot().map_err(OperationError::from)
+    }
+}
+impl Engine {
+    pub fn new(services: EngineServices) -> Result<Self, OperationError> {
+        services.limits.validate()?;
+        services.inspection_limits.validate()?;
+        if let Some(configuration) = &services.cades {
+            configuration.evidence_limits.validate().map_err(|error| {
+                crate::cades::error(oncl_pki::cms::ades::AdesError::Evidence(error))
+            })?;
+            if configuration.tsa.hash != HashAlg::Sha256 || !configuration.tsa.require_tsa_eku {
+                return Err(oncl_pki::resource::ProcessingError::InvalidInput(
+                    "CAdES acquisition requires SHA-256 and TSA EKU",
+                )
+                .into());
+            }
+        }
+        let budget = match services.shared {
+            Some(shared) => shared,
+            None => Arc::new(SharedBudget::new(services.limits.clone())?),
+        };
+        Ok(Self {
+            limits: services.limits,
+            budget,
+            identity: Arc::new(()),
+            keys: services.keys,
+            validation: services.validation,
+            temporary: services.temporary,
+            cades: services.cades,
+            metadata: services.metadata,
+            inspection_limits: services.inspection_limits,
+            #[cfg(feature = "plugins")]
+            plugins: services.plugins,
+            #[cfg(feature = "plugins")]
+            plugin_guard: services.plugin_guard,
+            #[cfg(feature = "plugins")]
+            approved_call: std::sync::Mutex::new(()),
+            activity: None,
+        })
+    }
+    /// Counts every operation of this engine in `gate` from its admission to the end of its
+    /// context, so a maintainer holding the gate sees it and a held gate makes a new one
+    /// wait (see [`crate::activity`]). Without a gate operations are never held back.
+    #[must_use]
+    pub fn with_activity(mut self, gate: Arc<crate::activity::ActivityGate>) -> Self {
+        self.activity = Some(gate);
+        self
+    }
+    pub fn begin(
+        &self,
+        grant: ExecutionGrant,
+        policy: OperationPolicy,
+        control: Arc<dyn OperationControl>,
+    ) -> Result<OperationContext, OperationError> {
+        if grant.is_empty() {
+            return Err(OperationError::PermissionDenied);
+        }
+        Ok(Self::admitted_context(self.admit(control)?, grant, policy))
+    }
+    /// Admit bounded intake before the trusted host has resolved wire metadata
+    /// into authority. This does not permit any SDK operation or key opening.
+    pub fn admit(
+        &self,
+        control: Arc<dyn OperationControl>,
+    ) -> Result<OperationAdmission, OperationError> {
+        self.admit_with(control, true)
+    }
+    /// [`Self::admit`] without a `max_in_flight` slot, for a host that receives a request body
+    /// first (spooling documents, waiting for a slow client) and bounds those uploads itself.
+    /// Memory, temporary disk, metadata, document allowances, deadline and control are charged
+    /// exactly as for an admission; only the count of running operations is not. The slot is
+    /// taken by [`OperationAdmission::occupy_slot`] or, at the latest, by
+    /// [`Self::begin_admitted`], which is the only way to authority and fails with
+    /// `CapacityExceeded` when every slot is taken.
+    pub fn admit_intake(
+        &self,
+        control: Arc<dyn OperationControl>,
+    ) -> Result<OperationAdmission, OperationError> {
+        self.admit_with(control, false)
+    }
+    /// Whether a `max_in_flight` slot is free now, for a host that refuses a request before it
+    /// reads its body. Best effort: the answer may be stale at once; only
+    /// [`OperationAdmission::occupy_slot`] and [`Self::begin_admitted`] decide.
+    pub fn slot_available(&self) -> bool {
+        self.budget.slot_available(&self.limits)
+    }
+    fn admit_with(
+        &self,
+        control: Arc<dyn OperationControl>,
+        slot: bool,
+    ) -> Result<OperationAdmission, OperationError> {
+        // Waits first if a maintainer holds the gate: the operation does not exist yet, so it
+        // holds no resource while it waits.
+        let activity = self
+            .activity
+            .as_ref()
+            .map(crate::activity::ActivityGate::begin);
+        let scope = if slot {
+            self.budget.begin(self.limits.clone(), control)?
+        } else {
+            self.budget.begin_unslotted(self.limits.clone(), control)?
+        };
+        // Counted until the LAST owner of the operation lets go: the context, but also a
+        // native worker that outlives it, a pending response or an artifact.
+        if let Some(activity) = activity {
+            scope.lease().attach_guard(Box::new(activity));
+        }
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_ID
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| OperationError::IdExhausted)?;
+        Ok(OperationAdmission {
+            id: OperationId(id),
+            owner: self.identity.clone(),
+            original_scope: scope.shared_view(),
+            scope,
+        })
+    }
+    /// Consume the original intake state only after host authorization. Scope
+    /// replacement through the public mutable resource handle cannot rebound
+    /// this admission onto another operation, even within the same Engine.
+    pub fn begin_admitted(
+        &self,
+        admission: OperationAdmission,
+        grant: ExecutionGrant,
+        policy: OperationPolicy,
+    ) -> Result<OperationContext, OperationError> {
+        if !Arc::ptr_eq(&admission.owner, &self.identity)
+            || !admission.scope.same_operation(&admission.original_scope)
+        {
+            return Err(OperationError::InvalidContext);
+        }
+        if grant.is_empty() {
+            return Err(OperationError::PermissionDenied);
+        }
+        // The deadline and control, and the `max_in_flight` slot when intake did not take it.
+        admission.scope.occupy_slot()?;
+        Ok(Self::admitted_context(admission, grant, policy))
+    }
+    fn admitted_context(
+        admission: OperationAdmission,
+        grant: ExecutionGrant,
+        policy: OperationPolicy,
+    ) -> OperationContext {
+        OperationContext {
+            id: admission.id,
+            owner: admission.owner,
+            grant,
+            policy,
+            scope: admission.scope,
+            leases: Vec::new(),
+            private_use_stopped: std::sync::atomic::AtomicBool::new(false),
+            batch_item: None,
+            borrowed_replay: None,
+            #[cfg(feature = "plugins")]
+            plugin_network: None,
+            #[cfg(feature = "plugins")]
+            plugin_network_budget: None,
+            #[cfg(feature = "plugins")]
+            plugin_pki: None,
+            #[cfg(feature = "plugins")]
+            plugin_xml_output_limit: None,
+            #[cfg(feature = "plugins")]
+            plugin_refusal: std::sync::Mutex::new(None),
+            #[cfg(feature = "plugins")]
+            plugin_declared: false,
+            #[cfg(feature = "plugins")]
+            plugin_ticket: std::sync::Mutex::new(None),
+        }
+    }
+    pub fn hash(
+        &self,
+        algorithm: HashAlg,
+        input: Source<'_>,
+        ctx: &mut OperationContext,
+    ) -> Result<HashReport, OperationError> {
+        if !Arc::ptr_eq(&ctx.owner, &self.identity) {
+            return Err(OperationError::InvalidContext);
+        }
+        if !ctx.grant.allows(Action::Hash) {
+            return Err(OperationError::PermissionDenied);
+        }
+        let before = ctx.scope.progress().bytes_in;
+        let digest = hash_source(input, algorithm, &mut ctx.scope)?;
+        let bytes_in = ctx
+            .scope
+            .progress()
+            .bytes_in
+            .checked_sub(before)
+            .ok_or(oncl_pki::resource::ProcessingError::InputLimit)?;
+        Ok(HashReport {
+            id: ctx.id,
+            digest,
+            bytes_in,
+        })
+    }
+}
+
+/// A successfully completed hash, not a signature or validation assertion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HashReport {
+    pub id: OperationId,
+    pub digest: DigestValue,
+    pub bytes_in: u64,
+}

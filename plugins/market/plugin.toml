@@ -1,0 +1,138 @@
+id = "io.github.arynyklas.openncalayer.port.market"
+version = "1.0.0"
+min_core = "0.1.0-alpha.7"
+modules = ["MarketSign"]
+
+[name]
+ru = "MarketSign (порт OpenNCALayer)"
+kk = "MarketSign (OpenNCALayer порты)"
+en = "MarketSign (OpenNCALayer port)"
+
+[description]
+ru = "Подпись текста и XML для портала omarket.kz, как модуль MarketSign"
+kk = "omarket.kz порталына мәтін мен XML қол қою, MarketSign модулі сияқты"
+en = "Text and XML signatures for omarket.kz, as the MarketSign module made them"
+
+[replaces]
+symname = "kz.ecc.MarketSignBundle"
+version = "1.0.7"
+
+[capabilities]
+keys = true
+dialogs = true
+
+[[operations]]
+name = "sign-text-attached-timestamp"
+module = "MarketSign"
+manual = true
+request = '{"module":"MarketSign","type":"text","data":"{text}","attach":true,"has_timestamp":true}'
+label = { ru = "Подписать текст (CMS): с меткой времени (данные внутри) (без окна повтора)", kk = "Мәтінге қол қою (CMS): уақыт белгісі бар (деректер ішінде) (қайталаусыз)", en = "Sign a text (CMS): time-stamped (attached) (no retry window)" }
+
+[[operations.params]]
+name = "text"
+kind = "text"
+max_chars = 65536
+
+[operations.uses]
+imports = ["keys_choose", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:text"
+
+[operations.uses.key.profile]
+encapsulate = true
+timestamp = "kalkan"
+
+[[operations]]
+name = "sign-text-attached"
+module = "MarketSign"
+manual = true
+request = '{"module":"MarketSign","type":"text","data":"{text}","attach":true,"has_timestamp":false}'
+label = { ru = "Подписать текст (CMS): данные внутри (без окна повтора)", kk = "Мәтінге қол қою (CMS): деректер ішінде (қайталаусыз)", en = "Sign a text (CMS): attached (no retry window)" }
+
+[[operations.params]]
+name = "text"
+kind = "text"
+max_chars = 65536
+
+[operations.uses]
+imports = ["keys_choose", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:text"
+
+[operations.uses.key.profile]
+encapsulate = true
+
+[[operations]]
+name = "sign-text-detached-timestamp"
+module = "MarketSign"
+manual = true
+request = '{"module":"MarketSign","type":"text","data":"{text}","attach":false,"has_timestamp":true}'
+label = { ru = "Подписать текст (CMS): с меткой времени (отсоединённая) (без окна повтора)", kk = "Мәтінге қол қою (CMS): уақыт белгісі бар (бөлек) (қайталаусыз)", en = "Sign a text (CMS): time-stamped (detached) (no retry window)" }
+
+[[operations.params]]
+name = "text"
+kind = "text"
+max_chars = 65536
+
+[operations.uses]
+imports = ["keys_choose", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:text"
+
+[operations.uses.key.profile]
+timestamp = "kalkan"
+
+[[operations]]
+name = "sign-text-detached"
+module = "MarketSign"
+manual = true
+request = '{"module":"MarketSign","type":"text","data":"{text}","attach":false,"has_timestamp":false}'
+label = { ru = "Подписать текст (CMS): отсоединённая подпись (без окна повтора)", kk = "Мәтінге қол қою (CMS): бөлек қолтаңба (қайталаусыз)", en = "Sign a text (CMS): detached (no retry window)" }
+
+[[operations.params]]
+name = "text"
+kind = "text"
+max_chars = 65536
+
+[operations.uses]
+imports = ["keys_choose", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:text"
+
+[[operations]]
+name = "sign-xml"
+module = "MarketSign"
+manual = true
+request = '{"module":"MarketSign","type":"xml","data":"{xml}"}'
+label = { ru = "Подписать XML-документ целиком (без окна повтора)", kk = "XML құжатына тұтас қол қою (қайталаусыз)", en = "Sign a whole XML document (no retry window)" }
+
+[[operations.params]]
+name = "xml"
+kind = "text"
+max_chars = 65536
+
+[operations.uses]
+imports = ["keys_choose", "keys_release", "random", "keys_sign_xml_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "xml_ex"
+content = "param:xml"
+
+[operations.uses.key.profile]
+placement = "document_element"
+strip_whitespace = true
+base64_line_breaks = false
+output = { serialize = { declaration = false, standalone_no = false, trim = true } }

@@ -1,0 +1,18 @@
+{
+  "name": "bad-signature-targets",
+  "attack": "the only signature of 2.targets.json has its last hex digit flipped",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "targets",
+  "error_class": "UnsignedMetadataError: signature threshold not met for targets",
+  "changed_files_vs_valid": [
+    "metadata/2.targets.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "UnsignedMetadataError: targets was signed by 0/1 keys",
+    "diverges_from_contract": false
+  }
+}

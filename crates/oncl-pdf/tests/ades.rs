@@ -1,0 +1,3387 @@
+//! P03: real PDF evidence, immutable extension and protected revision controls.
+#![cfg(feature = "testing")]
+use oncl_pdf::{PdfLimits, PdfSignProfile, ades};
+use oncl_pki::{
+    cms::ades::{AdesServices, ValidationMaterial},
+    crl::MockCrl,
+    evidence::{AdesLevel, EvidenceLimits},
+    io::{Source, TemporaryStore},
+    key::{PrivateKey, SigAlg},
+    pkcs12::{KeyEntry, load},
+    pkix::CaSet,
+    resource::{
+        OperationControl, ProcessingError, Progress, ResourceLimits, ResourceScope, SharedBudget,
+    },
+    testing::{TestCertSpec, issue_cert},
+    tsp::{MockTsa, TsaMethod, TsaProfile, TsaSpec},
+    validation::{NetworkPolicy, ValidationContext, ValidationPolicy, Verdict},
+};
+use std::{io::Cursor, sync::Arc};
+use time::{OffsetDateTime, macros::datetime};
+const NOW: OffsetDateTime = datetime!(2026-11-03 12:00 UTC);
+const URL: &str = "http://127.0.0.1:47819/tsa";
+struct Control;
+impl OperationControl for Control {
+    fn checkpoint(&self, _: Progress) -> Result<(), ProcessingError> {
+        Ok(())
+    }
+}
+fn scope() -> ResourceScope {
+    let limits = ResourceLimits {
+        memory_bytes: 1 << 30,
+        metadata_bytes: 64 << 20,
+        temp_bytes: 256 << 20,
+        ..ResourceLimits::default()
+    };
+    Arc::new(SharedBudget::new(limits.clone()).unwrap())
+        .begin(limits, Arc::new(Control))
+        .unwrap()
+}
+fn entry(name: &str) -> KeyEntry {
+    let f = oncl_testkit::synthetic(name);
+    load(&oncl_testkit::read(f.path), &f.password)
+        .unwrap()
+        .remove(0)
+}
+fn strip(spec: &mut TestCertSpec) {
+    spec.extensions.retain(|e| {
+        !matches!(
+            e.extn_id.to_string().as_str(),
+            "2.5.29.14" | "2.5.29.35" | "1.3.6.1.5.5.7.1.1" | "2.5.29.31"
+        )
+    });
+}
+struct Fixture {
+    doc: KeyEntry,
+    tsa: KeyEntry,
+    root: KeyEntry,
+    anchors: CaSet,
+    crl: Vec<u8>,
+}
+impl Fixture {
+    fn new() -> Self {
+        let mut root = entry("user-rsa-sign");
+        root.key = PrivateKey::from_pkcs8_der(
+            include_bytes!("../../../fixtures/openssl/rsa.pk8.der"),
+            None,
+        )
+        .unwrap();
+        let mut spec = TestCertSpec::from_cert(&entry("root-gost2015.key").cert);
+        spec.subject = root.cert.tbs_certificate().subject().clone();
+        spec.public_key = root.key.public_key().to_spki();
+        spec.serial = vec![0x63, 0x17, 1];
+        strip(&mut spec);
+        root.cert = issue_cert(&root, spec);
+        let mut doc = entry("user-rsa-sign");
+        let mut spec = TestCertSpec::from_cert(&doc.cert);
+        spec.serial = vec![0x63, 0x17, 2];
+        strip(&mut spec);
+        doc.cert = issue_cert(&root, spec);
+        let mut tsa = doc.clone();
+        let mut spec = TestCertSpec::from_cert(&entry("tsa-gost2015").cert);
+        spec.public_key = tsa.key.public_key().to_spki();
+        spec.serial = vec![0x63, 0x17, 3];
+        strip(&mut spec);
+        tsa.cert = issue_cert(&root, spec);
+        let crl = MockCrl::new(root.clone())
+            .with_this_update(NOW - time::Duration::MINUTE)
+            .next_update(Some(NOW + time::Duration::HOUR))
+            .der();
+        Self {
+            anchors: CaSet::new(vec![root.cert.clone()]),
+            root,
+            doc,
+            tsa,
+            crl,
+        }
+    }
+    fn run(&self, old: Option<&[u8]>, level: AdesLevel) -> (Vec<u8>, ades::PadesReport) {
+        self.run_from(
+            old,
+            level,
+            include_bytes!("fixtures/external-multipage.pdf"),
+        )
+    }
+    fn run_from(
+        &self,
+        old: Option<&[u8]>,
+        level: AdesLevel,
+        source: &[u8],
+    ) -> (Vec<u8>, ades::PadesReport) {
+        let (bytes, checked) = self.try_run_from(old, level, source).unwrap();
+        assert_eq!(checked.verdict, Verdict::Valid);
+        assert_eq!(checked.level(), Some(level));
+        assert_eq!(
+            lopdf::Document::load_mem(&bytes).unwrap().get_pages().len(),
+            4
+        );
+        (bytes, checked)
+    }
+    /// Sign or extend and verify at `NOW` without judging the verdict; an error is the
+    /// operation refusing the evidence.
+    fn try_run_from(
+        &self,
+        old: Option<&[u8]>,
+        level: AdesLevel,
+        source: &[u8],
+    ) -> Result<(Vec<u8>, ades::PadesReport), String> {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TemporaryStore::new(temp.path()).unwrap();
+        let http = MockTsa::new(self.tsa.clone()).with_gen_time(NOW);
+        let validation = ValidationContext {
+            policy: ValidationPolicy::StrictOnline,
+            now: NOW,
+            anchors: &self.anchors,
+            intermediates: &[],
+            http: &http,
+        };
+        let network = NetworkPolicy::only_endpoints([URL]).unwrap();
+        let mut profile = TsaProfile::kalkan_default();
+        profile.url = URL.into();
+        profile.method = TsaMethod::Post;
+        let tsa = TsaSpec::from(profile);
+        let certs = [self.doc.cert.clone(), self.tsa.cert.clone()];
+        let crls = [self.crl.as_slice()];
+        let services = AdesServices {
+            validation: &validation,
+            host_clock: None,
+            network: &network,
+            temporary: &store,
+            limits: EvidenceLimits {
+                max_items: 64,
+                max_bytes: 8 << 20,
+                max_item_bytes: 1 << 20,
+                max_crl_bytes: 8 << 20,
+                max_crl_item_bytes: 1 << 20,
+                max_total_bytes: 8 << 20,
+                max_chain_len: 8,
+                max_proofs: 16,
+                max_coverage_parts: 1024,
+                max_coverage_bytes: 10_737_418_240,
+            },
+            tsa: Some(&tsa),
+            material: ValidationMaterial {
+                certificates: &certs,
+                ocsp: &[],
+                crls: &crls,
+            },
+        };
+        let mut s = scope();
+        let mut output = store.stage(&mut s).unwrap();
+        if let Some(old) = old {
+            ades::extend(
+                level,
+                Source::sequential(&mut Cursor::new(old), None),
+                &PdfLimits::default(),
+                &services,
+                &[SigAlg::RsaSha256],
+                &mut output,
+                &s,
+            )
+            .map_err(|e| format!("{e:?}"))?;
+        } else {
+            ades::sign(
+                level,
+                Source::sequential(&mut Cursor::new(source), None),
+                &PdfSignProfile::default(),
+                &mut self.doc.clone(),
+                &services,
+                &mut output,
+                &s,
+            )
+            .map_err(|e| format!("{e:?}"))?;
+        }
+        let mut bytes = Vec::new();
+        output.copy_to(&mut bytes).map_err(|e| format!("{e:?}"))?;
+        let checked = ades::verify(
+            level,
+            Source::sequential(&mut Cursor::new(&bytes), None),
+            &PdfLimits::default(),
+            &services,
+            &[SigAlg::RsaSha256],
+            &mut s,
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        Ok((bytes, checked))
+    }
+    fn inspect(
+        &self,
+        bytes: &[u8],
+        required: AdesLevel,
+        now: OffsetDateTime,
+        crl: &[u8],
+    ) -> Result<ades::PadesReport, oncl_pdf::PdfError> {
+        self.context(now, crl, |services| {
+            ades::verify(
+                required,
+                Source::sequential(&mut Cursor::new(bytes), None),
+                &PdfLimits::default(),
+                services,
+                &[SigAlg::RsaSha256],
+                &mut scope(),
+            )
+        })
+    }
+    fn context<T>(
+        &self,
+        now: OffsetDateTime,
+        crl: &[u8],
+        action: impl FnOnce(&AdesServices<'_>) -> T,
+    ) -> T {
+        self.context_limits(
+            now,
+            crl,
+            EvidenceLimits {
+                max_items: 64,
+                max_bytes: 8 << 20,
+                max_item_bytes: 1 << 20,
+                max_crl_bytes: 8 << 20,
+                max_crl_item_bytes: 1 << 20,
+                max_total_bytes: 8 << 20,
+                max_chain_len: 8,
+                max_proofs: 16,
+                max_coverage_parts: 1024,
+                max_coverage_bytes: 10_737_418_240,
+            },
+            action,
+        )
+    }
+    fn context_limits<T>(
+        &self,
+        now: OffsetDateTime,
+        crl: &[u8],
+        limits: EvidenceLimits,
+        action: impl FnOnce(&AdesServices<'_>) -> T,
+    ) -> T {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TemporaryStore::new(temp.path()).unwrap();
+        let http = MockTsa::new(self.tsa.clone()).with_gen_time(now);
+        let validation = ValidationContext {
+            policy: ValidationPolicy::StrictOnline,
+            now,
+            anchors: &self.anchors,
+            intermediates: &[],
+            http: &http,
+        };
+        let network = NetworkPolicy::only_endpoints([URL]).unwrap();
+        let certs = [
+            self.doc.cert.clone(),
+            self.tsa.cert.clone(),
+            self.root.cert.clone(),
+        ];
+        let crls = if crl.is_empty() {
+            Vec::new()
+        } else {
+            vec![crl]
+        };
+        let services = AdesServices {
+            validation: &validation,
+            host_clock: None,
+            network: &network,
+            temporary: &store,
+            limits,
+            tsa: None,
+            material: ValidationMaterial {
+                certificates: &certs,
+                ocsp: &[],
+                crls: &crls,
+            },
+        };
+        action(&services)
+    }
+    fn rejected(&self, bytes: &[u8]) {
+        assert!(
+            !self
+                .inspect(bytes, AdesLevel::B, NOW, &self.crl)
+                .is_ok_and(|r| r.verdict == Verdict::Valid)
+        );
+        self.context(NOW, &self.crl, |services| {
+            let mut s = scope();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            assert!(
+                ades::extend(
+                    AdesLevel::Lta,
+                    Source::sequential(&mut Cursor::new(bytes), None),
+                    &PdfLimits::default(),
+                    services,
+                    &[SigAlg::RsaSha256],
+                    &mut output,
+                    &s
+                )
+                .is_err()
+            );
+            assert!(output.copy_to(&mut Vec::new()).is_err());
+        });
+    }
+}
+#[test]
+fn lt_lta_extend_without_content_resign() {
+    let f = Fixture::new();
+    let (b, _) = f.run(None, AdesLevel::B);
+    let (t, _) = f.run(None, AdesLevel::T);
+    assert_ne!(b, t);
+    let (lt, _) = f.run(Some(&t), AdesLevel::Lt);
+    assert!(lt.starts_with(&t));
+    let (lta, _) = f.run(Some(&lt), AdesLevel::Lta);
+    assert!(lta.starts_with(&lt));
+    let (renewed, _) = f.run(Some(&lta), AdesLevel::Lta);
+    assert!(renewed.starts_with(&lta));
+}
+#[test]
+fn document_timestamp_and_dss_tamper() {
+    let f = Fixture::new();
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    let doc = lopdf::Document::load_mem(&lta).unwrap();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    assert!(doc.get_object(root).unwrap().as_dict().unwrap().has(b"DSS"));
+    assert!(doc.objects.values().any(|v| v.as_dict().is_ok_and(|d| {
+        d.get(b"Type")
+            .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"DocTimeStamp"))
+    })));
+    let mut dss = lta.clone();
+    let offset = dss
+        .windows(f.crl.len())
+        .position(|part| part == f.crl)
+        .unwrap();
+    dss[offset + f.crl.len() - 1] ^= 1;
+    f.rejected(&dss);
+    let mut timestamp = lta.clone();
+    let start = timestamp
+        .windows(b"/ETSI.RFC3161".len())
+        .position(|part| part == b"/ETSI.RFC3161")
+        .unwrap();
+    let gap = start
+        + timestamp[start..]
+            .windows(11)
+            .position(|part| part == b"/Contents <")
+            .unwrap()
+        + 11;
+    timestamp[gap + 100] ^= 1;
+    f.rejected(&timestamp);
+}
+#[test]
+fn revocation_after_proven_time() {
+    let f = Fixture::new();
+    let (t, _) = f.run(None, AdesLevel::T);
+    let now = NOW + time::Duration::MINUTE;
+    let revoked = MockCrl::new(f.root.clone())
+        .with_this_update(now - time::Duration::SECOND)
+        .next_update(Some(now + time::Duration::HOUR))
+        .revoke(
+            f.doc.cert.tbs_certificate().serial_number().as_bytes(),
+            NOW + time::Duration::SECOND,
+        )
+        .der();
+    let report = f.inspect(&t, AdesLevel::T, now, &revoked).unwrap();
+    assert_eq!(report.verdict, Verdict::Valid);
+    let signer = &report.signatures()[0].validation.signers[0];
+    assert_eq!(signer.proof_time.as_ref().unwrap().at(), NOW);
+    assert!(signer.reasons.iter().any(|r| matches!(
+        r,
+        oncl_pki::validation::ValidationReason::RevokedAfterProvenTime { .. }
+    )));
+    let before = MockCrl::new(f.root.clone())
+        .with_this_update(now - time::Duration::SECOND)
+        .next_update(Some(now + time::Duration::HOUR))
+        .revoke(
+            f.doc.cert.tbs_certificate().serial_number().as_bytes(),
+            NOW - time::Duration::SECOND,
+        )
+        .der();
+    assert_ne!(
+        f.inspect(&t, AdesLevel::T, now, &before).unwrap().verdict,
+        Verdict::Valid
+    );
+}
+
+fn encode_object(value: &lopdf::Object, out: &mut Vec<u8>) {
+    use lopdf::Object;
+    match value {
+        Object::Null => out.extend_from_slice(b"null"),
+        Object::Boolean(value) => out.extend_from_slice(if *value { b"true" } else { b"false" }),
+        Object::Integer(value) => out.extend_from_slice(value.to_string().as_bytes()),
+        Object::Real(value) => out.extend_from_slice(value.to_string().as_bytes()),
+        Object::Name(name) => {
+            out.push(b'/');
+            for b in name {
+                out.extend_from_slice(format!("#{b:02X}").as_bytes());
+            }
+        }
+        Object::String(bytes, _) => {
+            out.push(b'<');
+            for b in bytes {
+                out.extend_from_slice(format!("{b:02X}").as_bytes());
+            }
+            out.push(b'>');
+        }
+        Object::Reference((id, generation)) => {
+            out.extend_from_slice(format!("{id} {generation} R").as_bytes())
+        }
+        Object::Array(values) => {
+            out.push(b'[');
+            for value in values {
+                encode_object(value, out);
+                out.push(b' ');
+            }
+            out.push(b']');
+        }
+        Object::Dictionary(values) => {
+            out.extend_from_slice(b"<<");
+            for (key, value) in values {
+                encode_object(&Object::Name(key.clone()), out);
+                out.push(b' ');
+                encode_object(value, out);
+                out.push(b' ');
+            }
+            out.extend_from_slice(b">>");
+        }
+        Object::Stream(_) => panic!("attack helper only serializes dictionary metadata"),
+    }
+}
+fn append_objects(bytes: &[u8], objects: Vec<(lopdf::ObjectId, lopdf::Object)>) -> Vec<u8> {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    let marker = bytes.windows(9).rposition(|b| b == b"startxref").unwrap() + 9;
+    let previous = std::str::from_utf8(&bytes[marker..])
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let mut result = bytes.to_vec();
+    result.push(b'\n');
+    let mut offsets = Vec::new();
+    let objects_max = objects.iter().map(|((id, _), _)| *id).max().unwrap_or(0);
+    for ((id, generation), value) in objects {
+        offsets.push((id, generation, result.len()));
+        result.extend_from_slice(format!("{id} {generation} obj\n").as_bytes());
+        encode_object(&value, &mut result);
+        result.extend_from_slice(b"\nendobj\n");
+    }
+    offsets.sort_unstable();
+    let xref = result.len();
+    result.extend_from_slice(b"xref\n");
+    for (id, generation, offset) in offsets {
+        result.extend_from_slice(format!("{id} 1\n{offset:010} {generation:05} n \n").as_bytes());
+    }
+    result.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Prev {previous} /Root ",
+            objects_max.max(doc.max_id) + 1,
+        )
+        .as_bytes(),
+    );
+    encode_object(doc.trailer.get(b"Root").unwrap(), &mut result);
+    for key in [b"Info".as_slice(), b"ID"] {
+        if let Ok(value) = doc.trailer.get(key) {
+            result.push(b' ');
+            encode_object(&lopdf::Object::Name(key.to_vec()), &mut result);
+            result.push(b' ');
+            encode_object(value, &mut result);
+        }
+    }
+    result.extend_from_slice(format!(" >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    result
+}
+/// One classic xref entry: (object, offset-or-next-free, generation, 'n' or 'f').
+type XrefLine = (u32, u64, u32, char);
+/// Appends an object-less increment with a hand-written xref section and a raw
+/// `/ID` trailer value (e.g. `[<aa> <bb>]`), so malformed IDs can be forged.
+fn append_raw(bytes: &[u8], lines: &[XrefLine], id: Option<&str>) -> Vec<u8> {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    let marker = bytes.windows(9).rposition(|b| b == b"startxref").unwrap() + 9;
+    let previous = std::str::from_utf8(&bytes[marker..])
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let mut result = bytes.to_vec();
+    result.push(b'\n');
+    let xref = result.len();
+    result.extend_from_slice(b"xref\n");
+    for (id, offset, generation, kind) in lines {
+        result.extend_from_slice(
+            format!("{id} 1\n{offset:010} {generation:05} {kind} \n").as_bytes(),
+        );
+    }
+    result.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Prev {previous} /Root ",
+            doc.max_id + 8,
+        )
+        .as_bytes(),
+    );
+    encode_object(doc.trailer.get(b"Root").unwrap(), &mut result);
+    if let Ok(value) = doc.trailer.get(b"Info") {
+        result.extend_from_slice(b" /Info ");
+        encode_object(value, &mut result);
+    }
+    if let Some(id) = id {
+        result.extend_from_slice(format!(" /ID {id}").as_bytes());
+    }
+    result.extend_from_slice(format!(" >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    result
+}
+fn hex(v: &[u8]) -> String {
+    v.iter().map(|b| format!("{b:02X}")).collect()
+}
+fn id_pair(a: &[u8], b: &[u8]) -> String {
+    format!("[<{}> <{}>]", hex(a), hex(b))
+}
+fn trailer_id(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    doc.trailer
+        .get(b"ID")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_vec())
+        .collect()
+}
+/// `Ok(())` only when the increment passes the augmentation grammar and the
+/// document is then evaluated; otherwise the exact refusal text.
+fn grammar(f: &Fixture, bytes: &[u8]) -> Result<(), String> {
+    match f.inspect(bytes, AdesLevel::B, NOW, &f.crl) {
+        Err(oncl_pdf::PdfError::Unsupported(m)) => Err(m.to_string()),
+        Err(e) => panic!("unexpected non-grammar error: {e:?}"),
+        Ok(report) => {
+            assert_eq!(report.verdict, Verdict::Valid);
+            Ok(())
+        }
+    }
+}
+const TRAILER: &str = "incremental trailer metadata change";
+const FREE: &str = "free or compressed augmentation entry";
+#[test]
+fn update_may_change_trailer_id_instance_and_relist_free_head_only() {
+    let f = Fixture::new();
+    let (lt, _) = f.run(None, AdesLevel::Lt);
+    let ids = trailer_id(&lt);
+    let original = ids[0].clone();
+    let head: XrefLine = (0, 0, 65535, 'f');
+    let new_id = id_pair(&original, &[9, 8, 7, 6]);
+    // The unchanged document is itself Valid; the same bytes plus an ID[1] change
+    // and the object 0 free head stay Valid.
+    assert_eq!(grammar(&f, &lt), Ok(()));
+    assert_eq!(
+        grammar(&f, &append_raw(&lt, &[head], Some(&new_id))),
+        Ok(())
+    );
+    // ID[0] substitution.
+    let swapped = id_pair(&vec![1; original.len()], &[9, 8, 7, 6]);
+    assert_eq!(
+        grammar(&f, &append_raw(&lt, &[head], Some(&swapped))),
+        Err(TRAILER.into())
+    );
+    // Malformed IDs: wrong length, non-string, indirect, missing.
+    for bad in [
+        format!("[<{}>]", hex(&original)),
+        format!("[<{}> <01> <02>]", hex(&original)),
+        format!("[<{}> 7]", hex(&original)),
+        "[7 <01>]".to_string(),
+        format!("[<{}> 7 0 R]", hex(&original)),
+        "7 0 R".to_string(),
+    ] {
+        assert_eq!(
+            grammar(&f, &append_raw(&lt, &[head], Some(&bad))),
+            Err(TRAILER.into()),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        grammar(&f, &append_raw(&lt, &[head], None)),
+        Err(TRAILER.into())
+    );
+    // Freeing a real object is refused; only the object 0 head is exempt.
+    let doc = lopdf::Document::load_mem(&lt).unwrap();
+    let page = doc.get_pages().values().next().unwrap().0;
+    let deleted = append_raw(&lt, &[head, (page, 0, 1, 'f')], Some(&new_id));
+    assert_eq!(grammar(&f, &deleted), Err(FREE.into()));
+    // Head generation must be 65535.
+    assert_eq!(
+        grammar(&f, &append_raw(&lt, &[(0, 0, 0, 'f')], Some(&new_id))),
+        Err(FREE.into())
+    );
+    // Head whose next-free link names a live object is refused; a link to another
+    // free entry is accepted.
+    assert_eq!(
+        grammar(
+            &f,
+            &append_raw(&lt, &[(0, page as u64, 65535, 'f')], Some(&new_id))
+        ),
+        Err(FREE.into())
+    );
+    let spare = doc.max_id + 1;
+    assert_eq!(
+        grammar(
+            &f,
+            &append_raw(
+                &lt,
+                &[(0, spare as u64, 65535, 'f'), (spare, 0, 1, 'f')],
+                Some(&new_id)
+            )
+        ),
+        Err(FREE.into()),
+        "a new free object is still an object-level change"
+    );
+    // Object 0 reported in use is not a free head: refused by the generic
+    // object rule (it points before the new revision).
+    let in_use = append_raw(&lt, &[(0, 12, 0, 'n')], Some(&new_id));
+    assert_eq!(
+        grammar(&f, &in_use),
+        Err("validation metadata aliases existing source object".into())
+    );
+    // The earlier increment is what trips first in the forgery above; a later
+    // head over it is refused identically.
+    assert_eq!(
+        grammar(&f, &append_raw(&in_use, &[head], Some(&new_id))),
+        Err("validation metadata aliases existing source object".into())
+    );
+}
+#[test]
+fn free_head_is_refused_when_object_zero_was_in_use_before_signing() {
+    let f = Fixture::new();
+    // The unsigned source already carries an increment listing object 0 as in use,
+    // so only the prior-state guard of the head check can refuse the later head.
+    let source = append_raw(
+        include_bytes!("fixtures/external-multipage.pdf"),
+        &[(0, 12, 0, 'n')],
+        None,
+    );
+    let (lt, _) = f.run_from(None, AdesLevel::Lt, &source);
+    let head: XrefLine = (0, 0, 65535, 'f');
+    let doc = lopdf::Document::load_mem(&lt).unwrap();
+    let id = doc.trailer.get(b"ID").ok().map(|_| {
+        let ids = trailer_id(&lt);
+        id_pair(&ids[0], &[9, 8, 7, 6])
+    });
+    assert_eq!(
+        grammar(&f, &append_raw(&lt, &[head], id.as_deref())),
+        Err(FREE.into())
+    );
+}
+/// Appends an increment whose cross-reference is an uncompressed xref stream.
+fn append_xref_stream(bytes: &[u8], w2: usize, head_generation: u16, id: &str) -> Vec<u8> {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    let marker = bytes.windows(9).rposition(|b| b == b"startxref").unwrap() + 9;
+    let previous = std::str::from_utf8(&bytes[marker..])
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let mut result = bytes.to_vec();
+    result.push(b'\n');
+    let xref = result.len();
+    let own = doc.max_id + 1;
+    let mut data = vec![0, 0, 0, 0];
+    if w2 == 2 {
+        data.extend_from_slice(&head_generation.to_be_bytes());
+    }
+    data.extend_from_slice(&[1, (xref >> 16) as u8, (xref >> 8) as u8, xref as u8]);
+    if w2 == 2 {
+        data.extend_from_slice(&[0, 0]);
+    }
+    result.extend_from_slice(
+        format!(
+            "{own} 0 obj\n<< /Type /XRef /Size {} /W [1 3 {w2}] /Index [0 1 {own} 1] /Prev {previous} /Root ",
+            own + 1
+        )
+        .as_bytes(),
+    );
+    encode_object(doc.trailer.get(b"Root").unwrap(), &mut result);
+    if let Ok(value) = doc.trailer.get(b"Info") {
+        result.extend_from_slice(b" /Info ");
+        encode_object(value, &mut result);
+    }
+    result.extend_from_slice(format!(" /ID {id} /Length {} >>\nstream\n", data.len()).as_bytes());
+    result.extend_from_slice(&data);
+    result.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    result
+}
+#[test]
+fn xref_stream_free_head_generation_field_is_tolerated_only_when_absent() {
+    let f = Fixture::new();
+    let (lt, _) = f.run(None, AdesLevel::Lt);
+    let original = trailer_id(&lt)[0].clone();
+    let id = id_pair(&original, &[9, 8, 7, 6]);
+    // W[2] == 0 (NCANode shape): head generation is implied.
+    assert_eq!(grammar(&f, &append_xref_stream(&lt, 0, 0, &id)), Ok(()));
+    // An explicit generation field must itself be 65535.
+    assert_eq!(grammar(&f, &append_xref_stream(&lt, 2, 65535, &id)), Ok(()));
+    assert_eq!(
+        grammar(&f, &append_xref_stream(&lt, 2, 0, &id)),
+        Err(FREE.into())
+    );
+}
+#[test]
+fn validation_update_cannot_alias_existing_page_as_acroform() {
+    let f = Fixture::new();
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    let doc = lopdf::Document::load_mem(&lta).unwrap();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let mut catalog = doc.get_object(root).unwrap().as_dict().unwrap().clone();
+    let form = catalog.get(b"AcroForm").unwrap().as_reference().unwrap();
+    let page = *doc.get_pages().values().next().unwrap();
+    catalog.set("AcroForm", lopdf::Object::Reference(page));
+    let forged = append_objects(
+        &lta,
+        vec![
+            (page, doc.get_object(form).unwrap().clone()),
+            (root, lopdf::Object::Dictionary(catalog)),
+        ],
+    );
+    f.rejected(&forged);
+}
+#[test]
+fn unsigned_page_catalog_permission_and_field_changes_are_not_validation() {
+    let f = Fixture::new();
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    let doc = lopdf::Document::load_mem(&lta).unwrap();
+    let page = *doc.get_pages().values().next().unwrap();
+    let mut page_value = doc.get_object(page).unwrap().as_dict().unwrap().clone();
+    page_value.set("MediaBox", vec![0.into(), 0.into(), 1.into(), 1.into()]);
+    f.rejected(&append_objects(
+        &lta,
+        vec![(page, lopdf::Object::Dictionary(page_value))],
+    ));
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    for key in ["PageMode", "Perms"] {
+        let mut catalog = doc.get_object(root).unwrap().as_dict().unwrap().clone();
+        catalog.set(key, lopdf::Object::Name(b"Forged".to_vec()));
+        f.rejected(&append_objects(
+            &lta,
+            vec![(root, lopdf::Object::Dictionary(catalog))],
+        ));
+    }
+}
+#[test]
+fn b_to_t_uses_raw_document_imprint_and_retains_every_old_signature() {
+    let f = Fixture::new();
+    let (b, _) = f.run(None, AdesLevel::B);
+    let (t, report) = f.run(Some(&b), AdesLevel::T);
+    assert!(t.starts_with(&b));
+    assert!(
+        report.signatures()[0].validation.signers[0]
+            .proof_time
+            .is_some()
+    );
+    let doc = lopdf::Document::load_mem(&t).unwrap();
+    for value in doc.objects.values() {
+        let Ok(dict) = value.as_dict() else {
+            continue;
+        };
+        if !dict
+            .get(b"Type")
+            .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"DocTimeStamp"))
+        {
+            continue;
+        }
+        let ranges: Vec<_> = dict
+            .get(b"ByteRange")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as usize)
+            .collect();
+        let mut hash = oncl_pki::digest::HashState::new(oncl_pki::key::HashAlg::Sha256);
+        hash.update(&t[ranges[0]..ranges[0] + ranges[1]]);
+        hash.update(&t[ranges[2]..ranges[2] + ranges[3]]);
+        let token =
+            oncl_pki::io::padded_der_sequence(dict.get(b"Contents").unwrap().as_str().unwrap())
+                .unwrap();
+        oncl_pki::tsp::verify_token_imprint(token, &hash.finish()).unwrap();
+        let mut changed = t.clone();
+        changed[ranges[1] - 1] ^= 1;
+        f.rejected(&changed);
+    }
+}
+
+#[test]
+fn multisigner_augmentation_preserves_existing_vri_entries() {
+    fn vri(bytes: &[u8]) -> lopdf::Dictionary {
+        let doc = lopdf::Document::load_mem(bytes).unwrap();
+        let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+        let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+        let dss = doc
+            .get_object(catalog.get(b"DSS").unwrap().as_reference().unwrap())
+            .unwrap()
+            .as_dict()
+            .unwrap();
+        doc.get_object(dss.get(b"VRI").unwrap().as_reference().unwrap())
+            .unwrap()
+            .as_dict()
+            .unwrap()
+            .clone()
+    }
+    let mut f = Fixture::new();
+    let (first, _) = f.run(None, AdesLevel::Lta);
+    let before = vri(&first);
+    let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+    spec.serial = vec![0x63, 0x17, 8];
+    f.doc.cert = issue_cert(&f.root, spec);
+    let second = f.context(NOW, &f.crl, |services| {
+        let mut profile = TsaProfile::kalkan_default();
+        profile.url = URL.into();
+        profile.method = TsaMethod::Post;
+        let tsa = TsaSpec::from(profile);
+        let configured = AdesServices {
+            validation: services.validation,
+            host_clock: services.host_clock,
+            network: services.network,
+            temporary: services.temporary,
+            limits: services.limits,
+            tsa: Some(&tsa),
+            material: ValidationMaterial {
+                certificates: services.material.certificates,
+                ocsp: services.material.ocsp,
+                crls: services.material.crls,
+            },
+        };
+        let mut s = scope();
+        let mut output = services.temporary.stage(&mut s).unwrap();
+        ades::sign(
+            AdesLevel::Lta,
+            Source::sequential(&mut Cursor::new(&first), None),
+            &PdfSignProfile::default(),
+            &mut f.doc.clone(),
+            &configured,
+            &mut output,
+            &s,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        output.copy_to(&mut bytes).unwrap();
+        bytes
+    });
+    assert!(second.starts_with(&first));
+    let after = vri(&second);
+    for (key, value) in &before {
+        let mut expected = Vec::new();
+        encode_object(value, &mut expected);
+        let mut actual = Vec::new();
+        encode_object(after.get(key).unwrap(), &mut actual);
+        assert_eq!(
+            actual, expected,
+            "an existing signature VRI must remain unchanged"
+        );
+    }
+    assert!(after.len() > before.len());
+    assert_eq!(
+        f.inspect(&second, AdesLevel::Lta, NOW, &f.crl)
+            .unwrap()
+            .signatures()
+            .len(),
+        2
+    );
+}
+
+fn with_tsa<T>(
+    f: &Fixture,
+    now: OffsetDateTime,
+    gen_time: OffsetDateTime,
+    action: impl FnOnce(&AdesServices<'_>) -> T,
+) -> T {
+    with_tsa_counted(f, now, gen_time, |services, _| action(services))
+}
+fn with_tsa_counted<T>(
+    f: &Fixture,
+    now: OffsetDateTime,
+    gen_time: OffsetDateTime,
+    action: impl FnOnce(&AdesServices<'_>, &MockTsa) -> T,
+) -> T {
+    let temp = tempfile::tempdir().unwrap();
+    let store = TemporaryStore::new(temp.path()).unwrap();
+    let http = MockTsa::new(f.tsa.clone()).with_gen_time(gen_time);
+    let validation = ValidationContext {
+        policy: ValidationPolicy::StrictOnline,
+        now,
+        anchors: &f.anchors,
+        intermediates: &[],
+        http: &http,
+    };
+    let network = NetworkPolicy::only_endpoints([URL]).unwrap();
+    let certs = [f.doc.cert.clone(), f.tsa.cert.clone(), f.root.cert.clone()];
+    let crls = [f.crl.as_slice()];
+    let mut profile = TsaProfile::kalkan_default();
+    profile.url = URL.into();
+    profile.method = TsaMethod::Post;
+    let mut tsa = TsaSpec::from(profile);
+    tsa.check_skew = None;
+    let services = AdesServices {
+        validation: &validation,
+        host_clock: None,
+        network: &network,
+        temporary: &store,
+        limits: EvidenceLimits {
+            max_items: 64,
+            max_bytes: 8 << 20,
+            max_item_bytes: 1 << 20,
+            max_crl_bytes: 8 << 20,
+            max_crl_item_bytes: 1 << 20,
+            max_total_bytes: 8 << 20,
+            max_chain_len: 8,
+            max_proofs: 16,
+            max_coverage_parts: 1024,
+            max_coverage_bytes: 10_737_418_240,
+        },
+        tsa: Some(&tsa),
+        material: ValidationMaterial {
+            certificates: &certs,
+            ocsp: &[],
+            crls: &crls,
+        },
+    };
+    action(&services, &http)
+}
+struct CountSigner {
+    key: KeyEntry,
+    calls: usize,
+}
+impl oncl_pki::key::DigestSigner for CountSigner {
+    fn certificate(&self) -> &oncl_pki::cert::Certificate {
+        &self.key.cert
+    }
+    fn algorithm(&self) -> SigAlg {
+        oncl_pki::key::DigestSigner::algorithm(&self.key)
+    }
+    fn sign_digest(
+        &mut self,
+        digest: &oncl_pki::digest::DigestValue,
+    ) -> Result<Vec<u8>, oncl_pki::key::KeyError> {
+        self.calls += 1;
+        oncl_pki::key::DigestSigner::sign_digest(&mut self.key, digest)
+    }
+}
+#[test]
+fn missing_acquisition_is_not_applied_but_future_and_untrusted_tsa_fail_after_one_use() {
+    let mut f = Fixture::new();
+    f.context(NOW, &f.crl, |services| {
+        let mut s = scope();
+        let mut output = services.temporary.stage(&mut s).unwrap();
+        let mut signer = CountSigner {
+            key: f.doc.clone(),
+            calls: 0,
+        };
+        assert!(
+            ades::sign(
+                AdesLevel::T,
+                Source::sequential(
+                    &mut Cursor::new(include_bytes!("fixtures/external-multipage.pdf")),
+                    None
+                ),
+                &PdfSignProfile::default(),
+                &mut signer,
+                services,
+                &mut output,
+                &s
+            )
+            .is_err()
+        );
+        assert_eq!(signer.calls, 0);
+        assert!(output.copy_to(&mut Vec::new()).is_err());
+    });
+    for untrusted in [false, true] {
+        if untrusted {
+            let issuer = f.tsa.clone();
+            f.tsa.cert = issue_cert(&issuer, TestCertSpec::from_cert(&issuer.cert));
+        }
+        with_tsa(
+            &f,
+            NOW,
+            if untrusted {
+                NOW
+            } else {
+                NOW + time::Duration::SECOND
+            },
+            |services| {
+                let mut s = scope();
+                let mut output = services.temporary.stage(&mut s).unwrap();
+                let mut signer = CountSigner {
+                    key: f.doc.clone(),
+                    calls: 0,
+                };
+                let error = ades::sign(
+                    AdesLevel::T,
+                    Source::sequential(
+                        &mut Cursor::new(include_bytes!("fixtures/external-multipage.pdf")),
+                        None,
+                    ),
+                    &PdfSignProfile::default(),
+                    &mut signer,
+                    services,
+                    &mut output,
+                    &s,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    error,
+                    oncl_pdf::PdfError::Ades(oncl_pki::cms::ades::AdesError::AfterKeyUse {
+                        applied: oncl_pki::key::AppliedState::Applied,
+                        ..
+                    })
+                ));
+                assert_eq!(signer.calls, 1);
+                assert!(output.copy_to(&mut Vec::new()).is_err());
+            },
+        );
+    }
+}
+#[test]
+fn required_level_is_not_achieved_and_tsa_status_is_judged_at_proof_time_not_token_presence() {
+    let f = Fixture::new();
+    let (t, _) = f.run(None, AdesLevel::T);
+    assert_eq!(
+        f.inspect(&t, AdesLevel::B, NOW, &f.crl).unwrap().level(),
+        Some(AdesLevel::T)
+    );
+    let missing_dss = f.inspect(&t, AdesLevel::Lt, NOW, &f.crl).unwrap();
+    assert_ne!(missing_dss.verdict, Verdict::Valid);
+    assert_eq!(missing_dss.level(), None);
+    assert_ne!(
+        f.inspect(&t, AdesLevel::T, NOW, &[]).unwrap().verdict,
+        Verdict::Valid
+    );
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    assert_eq!(
+        f.inspect(&lta, AdesLevel::B, NOW, &[]).unwrap().level(),
+        Some(AdesLevel::Lta)
+    );
+    // The status the document carries is judged at the proof time, not at the later clock.
+    assert_eq!(
+        f.inspect(&lta, AdesLevel::B, NOW + time::Duration::hours(2), &[])
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+}
+#[test]
+fn expired_now_requires_real_proven_time_not_pdf_claimed_date() {
+    use der::asn1::UtcTime;
+    let mut f = Fixture::new();
+    let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+    spec.validity.not_after = x509_cert::time::Time::UtcTime(
+        UtcTime::from_unix_duration(std::time::Duration::from_secs(
+            (NOW + time::Duration::SECOND).unix_timestamp() as u64,
+        ))
+        .unwrap(),
+    );
+    f.doc.cert = issue_cert(&f.root, spec);
+    let (b, _) = f.run(None, AdesLevel::B);
+    let (t, _) = f.run(None, AdesLevel::T);
+    let later = NOW + time::Duration::seconds(10);
+    assert_ne!(
+        f.inspect(&b, AdesLevel::B, later, &f.crl).unwrap().verdict,
+        Verdict::Valid
+    );
+    let proven = f.inspect(&t, AdesLevel::T, later, &f.crl).unwrap();
+    assert_eq!(proven.verdict, Verdict::Valid);
+    assert_eq!(
+        proven.signatures()[0].validation.signers[0]
+            .proof_time
+            .as_ref()
+            .unwrap()
+            .at(),
+        NOW
+    );
+}
+#[test]
+fn backdated_renewal_cannot_launder_old_archive_and_never_publishes() {
+    let f = Fixture::new();
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    with_tsa(
+        &f,
+        NOW + time::Duration::MINUTE,
+        NOW - time::Duration::SECOND,
+        |services| {
+            let mut s = scope();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            assert!(
+                ades::extend(
+                    AdesLevel::Lta,
+                    Source::sequential(&mut Cursor::new(&lta), None),
+                    &PdfLimits::default(),
+                    services,
+                    &[SigAlg::RsaSha256],
+                    &mut output,
+                    &s
+                )
+                .is_err()
+            );
+            assert!(output.copy_to(&mut Vec::new()).is_err());
+        },
+    );
+}
+#[test]
+fn pades_original_intake_and_final_output_are_counted_once_with_exact_quotas() {
+    let f = Fixture::new();
+    let (reference, _) = f.run(None, AdesLevel::Lta);
+    let source = include_bytes!("fixtures/external-multipage.pdf");
+    for short in [false, true] {
+        with_tsa(&f, NOW, NOW, |services| {
+            let limits = ResourceLimits {
+                input_bytes: source.len() as u64,
+                output_bytes: reference.len() as u64 - u64::from(short),
+                ..ResourceLimits::default()
+            };
+            let mut s = Arc::new(SharedBudget::new(limits.clone()).unwrap())
+                .begin(limits, Arc::new(Control))
+                .unwrap();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            let mut signer = CountSigner {
+                key: f.doc.clone(),
+                calls: 0,
+            };
+            let result = ades::sign(
+                AdesLevel::Lta,
+                Source::sequential(&mut Cursor::new(source), Some(1)),
+                &PdfSignProfile::default(),
+                &mut signer,
+                services,
+                &mut output,
+                &s,
+            );
+            assert_eq!(signer.calls, 1);
+            assert_eq!(s.progress().bytes_in, source.len() as u64);
+            if short {
+                assert!(matches!(
+                    result,
+                    Err(oncl_pdf::PdfError::Ades(
+                        oncl_pki::cms::ades::AdesError::AfterKeyUse {
+                            applied: oncl_pki::key::AppliedState::Applied,
+                            ..
+                        }
+                    ))
+                ));
+                assert!(output.copy_to(&mut Vec::new()).is_err());
+            } else {
+                result.unwrap();
+                assert_eq!(s.progress().bytes_out, reference.len() as u64);
+                let mut bytes = Vec::new();
+                output.copy_to(&mut bytes).unwrap();
+                assert_eq!(bytes.len(), reference.len());
+                assert_eq!(s.progress().bytes_out, reference.len() as u64);
+            }
+        });
+    }
+}
+#[test]
+fn incremental_revision_limit_is_enforced_on_verify_and_extension() {
+    let f = Fixture::new();
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    f.context(NOW, &f.crl, |services| {
+        let limits = PdfLimits {
+            max_revisions: 3,
+            ..PdfLimits::default()
+        };
+        assert!(matches!(
+            ades::verify(
+                AdesLevel::Lta,
+                Source::sequential(&mut Cursor::new(&lta), None),
+                &limits,
+                services,
+                &[SigAlg::RsaSha256],
+                &mut scope()
+            ),
+            Err(oncl_pdf::PdfError::Limit(_))
+        ));
+        let mut s = scope();
+        let mut output = services.temporary.stage(&mut s).unwrap();
+        assert!(
+            ades::extend(
+                AdesLevel::B,
+                Source::sequential(&mut Cursor::new(&lta), None),
+                &limits,
+                services,
+                &[SigAlg::RsaSha256],
+                &mut output,
+                &s
+            )
+            .is_err()
+        );
+        assert!(output.copy_to(&mut Vec::new()).is_err());
+    });
+}
+
+#[test]
+fn closed_document_proof_rejects_foreign_snapshot_wrong_imprint_and_own_gap() {
+    use oncl_pki::{
+        cms::ades::{SnapshotDocumentTimestamp, SnapshotSignature, verify_snapshot_pades},
+        io::{FrozenInput, PdfSnapshot, Region, SnapshotEncoding},
+    };
+    use std::sync::Mutex;
+    let f = Fixture::new();
+    let (b, _) = f.run(None, AdesLevel::B);
+    let (t, _) = f.run(Some(&b), AdesLevel::T);
+    let doc = lopdf::Document::load_mem(&t).unwrap();
+    let range = |dict: &lopdf::Dictionary| -> ([Region; 2], Region) {
+        let r: Vec<_> = dict
+            .get(b"ByteRange")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as u64)
+            .collect();
+        (
+            [
+                Region {
+                    offset: r[0],
+                    len: r[1],
+                },
+                Region {
+                    offset: r[2],
+                    len: r[3],
+                },
+            ],
+            Region {
+                offset: r[1],
+                len: r[2] - r[1],
+            },
+        )
+    };
+    let mut regular = None;
+    let mut timestamp = None;
+    for object in doc.objects.values() {
+        let Ok(dict) = object.as_dict() else {
+            continue;
+        };
+        if dict
+            .get(b"Type")
+            .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"Sig"))
+        {
+            regular = Some(range(dict));
+        }
+        if dict
+            .get(b"Type")
+            .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"DocTimeStamp"))
+        {
+            timestamp = Some(range(dict));
+        }
+    }
+    let (signed_ranges, cms_gap) = regular.unwrap();
+    let (document_ranges, token_gap) = timestamp.unwrap();
+    f.context(NOW, &f.crl, |services| {
+        let mut s = scope();
+        let mut frozen = FrozenInput::capture(
+            Source::sequential(&mut Cursor::new(&t), None),
+            services.temporary,
+            &mut s,
+        )
+        .unwrap();
+        let mut snapshot = PdfSnapshot::input(&mut frozen, &s).unwrap();
+        let cms = snapshot
+            .derive_region(cms_gap, &s, SnapshotEncoding::PdfByteString)
+            .unwrap();
+        let token = snapshot
+            .derive_region(token_gap, &s, SnapshotEncoding::PdfByteString)
+            .unwrap();
+        let snapshot = Mutex::new(snapshot);
+        let documents = [SnapshotDocumentTimestamp {
+            token: &token,
+            regions: document_ranges,
+        }];
+        assert_eq!(
+            verify_snapshot_pades(
+                AdesLevel::T,
+                &[SnapshotSignature {
+                    metadata: &cms,
+                    regions: signed_ranges
+                }],
+                &snapshot,
+                &[],
+                &documents,
+                services,
+                &[SigAlg::RsaSha256],
+                &s
+            )
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .verdict,
+            Verdict::Valid
+        );
+        for own_gap in [false, true] {
+            let mut forged = document_ranges;
+            if own_gap {
+                forged[0].len += 1;
+            } else {
+                forged[1].len -= 1;
+            }
+            let documents = [SnapshotDocumentTimestamp {
+                token: &token,
+                regions: forged,
+            }];
+            assert!(
+                !verify_snapshot_pades(
+                    AdesLevel::T,
+                    &[SnapshotSignature {
+                        metadata: &cms,
+                        regions: signed_ranges
+                    }],
+                    &snapshot,
+                    &[],
+                    &documents,
+                    services,
+                    &[SigAlg::RsaSha256],
+                    &s
+                )
+                .is_ok_and(|reports| reports.into_iter().next().unwrap().verdict == Verdict::Valid)
+            );
+        }
+        let mut other = FrozenInput::capture(
+            Source::sequential(&mut Cursor::new(&t), None),
+            services.temporary,
+            &mut s,
+        )
+        .unwrap();
+        let mut other_view = PdfSnapshot::input(&mut other, &s).unwrap();
+        let foreign = other_view
+            .derive_region(cms_gap, &s, SnapshotEncoding::PdfByteString)
+            .unwrap();
+        assert!(
+            verify_snapshot_pades(
+                AdesLevel::T,
+                &[SnapshotSignature {
+                    metadata: &foreign,
+                    regions: signed_ranges
+                }],
+                &snapshot,
+                &[],
+                &documents,
+                services,
+                &[SigAlg::RsaSha256],
+                &s
+            )
+            .is_err()
+        );
+    });
+}
+
+#[test]
+fn initial_signed_catalog_permissions_are_not_silently_accepted() {
+    use oncl_pki::cms::{self, AttrSpec, CertSpec, CoSign, Content, SignSpec};
+    let f = Fixture::new();
+    let (mut bytes, _) = f.run(None, AdesLevel::B);
+    let doc = lopdf::Document::load_mem(&bytes).unwrap();
+    let (id, signature) = doc
+        .objects
+        .iter()
+        .find_map(|(id, value)| {
+            value
+                .as_dict()
+                .ok()
+                .filter(|d| {
+                    d.get(b"Type")
+                        .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"Sig"))
+                })
+                .map(|dict| (*id, dict))
+        })
+        .unwrap();
+    let range: Vec<_> = signature
+        .get(b"ByteRange")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as usize)
+        .collect();
+    let version = b"/#56#65#72#73#69#6F#6E /#31#2E#37";
+    let at = bytes
+        .windows(version.len())
+        .position(|part| part == version)
+        .unwrap();
+    let permission = format!("/Perms << /DocMDP {} {} R >>", id.0, id.1);
+    assert!(permission.len() <= version.len());
+    bytes[at..at + version.len()].fill(b' ');
+    bytes[at..at + permission.len()].copy_from_slice(permission.as_bytes());
+    let mut protected = bytes[..range[1]].to_vec();
+    protected.extend_from_slice(&bytes[range[2]..range[2] + range[3]]);
+    let mut attrs = AttrSpec::cades(NOW);
+    attrs.signing_time = None;
+    let cms = cms::sign_spec(
+        &f.doc,
+        &[],
+        &SignSpec {
+            content: Content::Data(&protected),
+            encapsulate: false,
+            cosign: CoSign::Never,
+            econtent_type: None,
+            digest: None,
+            attrs,
+            certificates: CertSpec::Signer,
+        },
+    )
+    .unwrap();
+    cms::verify(&cms, Some(&protected)).unwrap();
+    bytes[range[1] + 1..range[2] - 1].fill(b'0');
+    for (index, byte) in cms.iter().enumerate() {
+        bytes[range[1] + 1 + index * 2] = b"0123456789ABCDEF"[(byte >> 4) as usize];
+        bytes[range[1] + 2 + index * 2] = b"0123456789ABCDEF"[(byte & 15) as usize];
+    }
+    f.rejected(&bytes);
+}
+
+/// The `/ByteRange` of the only signature of a PAdES file, from an independent parser.
+fn only_byte_range(bytes: &[u8]) -> [usize; 4] {
+    let doc = lopdf::Document::load_mem(bytes).unwrap();
+    let signature = doc
+        .objects
+        .values()
+        .filter_map(|value| value.as_dict().ok())
+        .find(|d| {
+            d.get(b"Type")
+                .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"Sig"))
+        })
+        .unwrap();
+    let range: Vec<_> = signature
+        .get(b"ByteRange")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as usize)
+        .collect();
+    range.try_into().unwrap()
+}
+
+/// What Kalkan (NCALayer/NCANode `/pdf/sign`) puts into an ETSI.CAdES.detached `/Contents`:
+/// contentType, signingTime, signingCertificateV2 and messageDigest over the ByteRange, no
+/// CMSAlgorithmProtection. The CMS is written over the original reserved space, so the rest
+/// of the file (the covered bytes) is untouched.
+fn with_kalkan_style_cms(f: &Fixture, mut bytes: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+    use oncl_pki::cms::{self, AttrSpec, CertSpec, CoSign, Content, SignSpec};
+    let range = only_byte_range(&bytes);
+    let mut protected = bytes[..range[1]].to_vec();
+    protected.extend_from_slice(&bytes[range[2]..range[2] + range[3]]);
+    let cms = cms::sign_spec(
+        &f.doc,
+        &[],
+        &SignSpec {
+            content: Content::Data(&protected),
+            encapsulate: false,
+            cosign: CoSign::Never,
+            econtent_type: None,
+            digest: None,
+            attrs: AttrSpec::cades(NOW),
+            certificates: CertSpec::Signer,
+        },
+    )
+    .unwrap();
+    cms::verify(&cms, Some(&protected)).unwrap();
+    assert!(cms.len() * 2 <= range[2] - range[1] - 2, "reserved space");
+    bytes[range[1] + 1..range[2] - 1].fill(b'0');
+    for (index, byte) in cms.iter().enumerate() {
+        bytes[range[1] + 1 + index * 2] = b"0123456789ABCDEF"[(byte >> 4) as usize];
+        bytes[range[1] + 2 + index * 2] = b"0123456789ABCDEF"[(byte & 15) as usize];
+    }
+    (bytes, cms)
+}
+
+fn only_signer(report: &ades::PadesReport) -> &oncl_pki::validation::SignerValidation {
+    assert_eq!(report.signatures().len(), 1);
+    assert_eq!(report.signatures()[0].validation.signers.len(), 1);
+    &report.signatures()[0].validation.signers[0]
+}
+
+#[test]
+fn kalkan_style_signing_time_is_a_profile_finding_not_a_failed_malformed_signature() {
+    use oncl_pki::validation::{CheckStatus, ProfileViolation, ValidationReason};
+    let f = Fixture::new();
+    let (original, _) = f.run(None, AdesLevel::B);
+    let (bytes, _) = with_kalkan_style_cms(&f, original);
+    let report = f.inspect(&bytes, AdesLevel::B, NOW, &f.crl).unwrap();
+    let signer = only_signer(&report);
+    // The signature value, the ByteRange digest and the signing certificate binding verify
+    // (the `pdf` profile accepts the same bytes: see the next test).
+    assert_eq!(signer.signature, CheckStatus::Passed);
+    assert!(
+        signer
+            .reasons
+            .iter()
+            .all(|reason| !matches!(reason, ValidationReason::Signature(_))),
+        "{:?}",
+        signer.reasons
+    );
+    // EN 319 142-1 table 1: a PAdES baseline CMS carries no signing-time attribute (the
+    // claimed time is the dictionary's /M), so the grade is "not conformant to this profile".
+    assert!(
+        signer.reasons.contains(&ValidationReason::Profile(
+            ProfileViolation::SigningTimeForbidden
+        )),
+        "{:?}",
+        signer.reasons
+    );
+    assert_eq!(signer.ades_level, None);
+    assert_eq!(report.verdict, Verdict::Invalid);
+    assert_eq!(report.level(), None);
+    // Nothing may be extended from a signature that does not meet the profile.
+    f.rejected(&bytes);
+}
+
+#[test]
+fn kalkan_style_pdf_is_accepted_by_the_generic_pdf_profile_with_the_same_signature_verdict() {
+    use oncl_pki::validation::CheckStatus;
+    let f = Fixture::new();
+    let (original, _) = f.run(None, AdesLevel::B);
+    let (bytes, _) = with_kalkan_style_cms(&f, original);
+    let report = f.context(NOW, &f.crl, |services| {
+        oncl_pdf::verify_source(
+            Source::sequential(&mut Cursor::new(&bytes), None),
+            &PdfLimits::default(),
+            services.temporary,
+            services.validation,
+            &[SigAlg::RsaSha256],
+            &mut scope(),
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        report.signatures[0].validation.signers[0].signature,
+        CheckStatus::Passed
+    );
+}
+
+#[test]
+fn tampered_kalkan_style_pades_still_fails_with_the_cryptographic_reason() {
+    use oncl_pki::{
+        cms::Problem,
+        validation::{CheckStatus, ProfileViolation, ValidationReason},
+    };
+    let f = Fixture::new();
+    let (original, _) = f.run(None, AdesLevel::B);
+    let (good, cms) = with_kalkan_style_cms(&f, original);
+    let range = only_byte_range(&good);
+
+    // A covered content byte (a digit of the claimed /M date) no longer matches the
+    // messageDigest.
+    let mut content = good.clone();
+    let m = content[..range[1]]
+        .windows(4)
+        .position(|w| w == b"(D:2")
+        .unwrap()
+        + 10;
+    assert!(content[m].is_ascii_digit());
+    content[m] = if content[m] == b'1' { b'2' } else { b'1' };
+    let report = f.inspect(&content, AdesLevel::B, NOW, &f.crl).unwrap();
+    let signer = only_signer(&report);
+    assert_eq!(signer.signature, CheckStatus::Failed);
+    assert!(
+        signer
+            .reasons
+            .contains(&ValidationReason::Signature(Problem::DigestMismatch)),
+        "{:?}",
+        signer.reasons
+    );
+    assert_ne!(report.verdict, Verdict::Valid);
+
+    // The signature value no longer verifies; the messageDigest still matches the bytes.
+    let mut forged = good.clone();
+    let last = range[1] + 1 + (cms.len() - 1) * 2;
+    forged[last] = if forged[last] == b'0' { b'1' } else { b'0' };
+    let report = f.inspect(&forged, AdesLevel::B, NOW, &f.crl).unwrap();
+    let signer = only_signer(&report);
+    assert_eq!(signer.signature, CheckStatus::Failed);
+    assert!(
+        !signer
+            .reasons
+            .contains(&ValidationReason::Signature(Problem::DigestMismatch)),
+        "{:?}",
+        signer.reasons
+    );
+    assert!(
+        signer
+            .reasons
+            .contains(&ValidationReason::Signature(Problem::BadSignature)),
+        "{:?}",
+        signer.reasons
+    );
+    assert_ne!(report.verdict, Verdict::Valid);
+    // A profile finding rides along, it never replaces the failure.
+    assert!(signer.reasons.contains(&ValidationReason::Profile(
+        ProfileViolation::SigningTimeForbidden
+    )));
+
+    // A ByteRange that no longer matches /Contents is not a verifiable signature at all.
+    let mut shifted = good.clone();
+    let key = shifted
+        .windows(10)
+        .position(|w| w == b"/ByteRange")
+        .unwrap();
+    // `/ByteRange [<20-digit start> <20-digit first length> ...`
+    let second = key + "/ByteRange [".len() + 21;
+    assert_eq!(
+        std::str::from_utf8(&shifted[second..second + 20])
+            .unwrap()
+            .parse::<usize>()
+            .unwrap(),
+        range[1]
+    );
+    let at = second + 19;
+    assert!(shifted[at].is_ascii_digit());
+    shifted[at] = if shifted[at] == b'9' {
+        b'8'
+    } else {
+        shifted[at] + 1
+    };
+    assert!(
+        !f.inspect(&shifted, AdesLevel::B, NOW, &f.crl)
+            .is_ok_and(|r| r.verdict == Verdict::Valid)
+    );
+}
+
+// Count real allocation work on this test thread only. Other parallel tests
+// never enter this measurement. The existing host OperationControl imposes the
+// finite work admission; no production quota or allocator is changed.
+struct AllocationWork;
+thread_local! {
+    static ALLOCATION_WORK: std::cell::Cell<(bool,u64)> = const { std::cell::Cell::new((false,0)) };
+}
+fn record_allocation(bytes: usize) {
+    let _ = ALLOCATION_WORK.try_with(|work| {
+        let (enabled, total) = work.get();
+        if enabled {
+            work.set((true, total.saturating_add(bytes as u64)));
+        }
+    });
+}
+unsafe impl std::alloc::GlobalAlloc for AllocationWork {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let value = unsafe { std::alloc::System.alloc(layout) };
+        if !value.is_null() {
+            record_allocation(layout.size());
+        }
+        value
+    }
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let value = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !value.is_null() {
+            record_allocation(layout.size());
+        }
+        value
+    }
+    unsafe fn realloc(&self, pointer: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        let value = unsafe { std::alloc::System.realloc(pointer, layout, size) };
+        if !value.is_null() {
+            record_allocation(size);
+        }
+        value
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(pointer, layout) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: AllocationWork = AllocationWork;
+struct MeasureAllocations;
+impl MeasureAllocations {
+    fn start() -> Self {
+        ALLOCATION_WORK.with(|work| work.set((true, 0)));
+        Self
+    }
+    fn bytes(&self) -> u64 {
+        ALLOCATION_WORK.with(|work| work.get().1)
+    }
+}
+impl Drop for MeasureAllocations {
+    fn drop(&mut self) {
+        ALLOCATION_WORK.with(|work| work.set((false, 0)));
+    }
+}
+struct AllocationAdmission(u64);
+impl OperationControl for AllocationAdmission {
+    fn checkpoint(&self, _: Progress) -> Result<(), ProcessingError> {
+        if ALLOCATION_WORK.with(|work| work.get().1) > self.0 {
+            Err(ProcessingError::MemoryLimit)
+        } else {
+            Ok(())
+        }
+    }
+}
+#[test]
+fn multisigner_common_dss_fits_one_shared_allocation_work_admission() {
+    let mut f = Fixture::new();
+    let (one_t, _) = f.run(None, AdesLevel::T);
+    let mut many_t = one_t.clone();
+    let mut certificates = vec![f.root.cert.clone(), f.tsa.cert.clone(), f.doc.cert.clone()];
+    for serial in [9, 10] {
+        let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+        spec.serial = vec![0x63, 0x17, serial];
+        f.doc.cert = issue_cert(&f.root, spec);
+        certificates.push(f.doc.cert.clone());
+        many_t = with_tsa(&f, NOW, NOW, |services| {
+            let mut s = scope();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            ades::sign(
+                AdesLevel::T,
+                Source::sequential(&mut Cursor::new(&many_t), None),
+                &PdfSignProfile::default(),
+                &mut f.doc.clone(),
+                services,
+                &mut output,
+                &s,
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            output.copy_to(&mut bytes).unwrap();
+            bytes
+        });
+    }
+    // Genuine issuer-signed renewal certificates, not padding or mock data.
+    for serial in 32..80 {
+        let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+        spec.serial = vec![0x63, 0x17, serial];
+        certificates.push(issue_cert(&f.root, spec));
+    }
+    let extend = |input: &[u8]| {
+        with_tsa(&f, NOW, NOW, |services| {
+            let configured = AdesServices {
+                validation: services.validation,
+                host_clock: services.host_clock,
+                network: services.network,
+                temporary: services.temporary,
+                limits: services.limits,
+                tsa: services.tsa,
+                material: ValidationMaterial {
+                    certificates: &certificates,
+                    ocsp: &[],
+                    crls: services.material.crls,
+                },
+            };
+            let mut s = scope();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            ades::extend(
+                AdesLevel::Lta,
+                Source::sequential(&mut Cursor::new(input), None),
+                &PdfLimits::default(),
+                &configured,
+                &[SigAlg::RsaSha256],
+                &mut output,
+                &s,
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            output.copy_to(&mut bytes).unwrap();
+            bytes
+        })
+    };
+    let one = extend(&one_t);
+    let many = extend(&many_t);
+    f.context(NOW,&f.crl,|services|{
+        let verify=|bytes:&[u8],admission:u64|{
+            let limits=ResourceLimits::default();
+            let mut s=Arc::new(SharedBudget::new(limits.clone()).unwrap()).begin(limits,Arc::new(AllocationAdmission(admission))).unwrap();
+            let measured=MeasureAllocations::start();
+            let result=ades::verify(AdesLevel::Lta,Source::sequential(&mut Cursor::new(bytes),None),&PdfLimits::default(),services,&[SigAlg::RsaSha256],&mut s);
+            let work=measured.bytes();drop(measured);(result,work)
+        };
+        let (single,single_work)=verify(&one,u64::MAX);let single=single.unwrap();
+        assert_eq!(single.verdict,Verdict::Valid);assert_eq!(single.signatures().len(),1);drop(single);
+        let (large_control,many_work)=verify(&many,u64::MAX);let large_control=large_control.unwrap();
+        assert_eq!(large_control.verdict,Verdict::Valid);assert_eq!(large_control.signatures().len(),3);drop(large_control);
+        let admission=single_work.checked_mul(2).unwrap();
+        eprintln!("real common certificates={} single_allocation_bytes={single_work} three_allocation_bytes={many_work} shared_admission={admission}",certificates.len());
+        let (same_budget_control,_)=verify(&one,admission);assert_eq!(same_budget_control.unwrap().verdict,Verdict::Valid);
+        let (shared,_) = verify(&many,admission);
+        let shared=shared.expect("three actual source signatures must reuse common evidence within the one shared work admission");
+        assert_eq!(shared.verdict,Verdict::Valid);assert_eq!(shared.level(),Some(AdesLevel::Lta));assert_eq!(shared.signatures().len(),3);
+    });
+}
+
+#[test]
+fn yielded_batch_report_retains_original_admission_after_iterator_drop() {
+    use oncl_pki::{
+        cms::ades::{SnapshotSignature, verify_snapshot_pades},
+        io::{FrozenInput, PdfSnapshot, Region, SnapshotEncoding},
+    };
+    use std::sync::Mutex;
+    let f = Fixture::new();
+    let (bytes, _) = f.run(None, AdesLevel::T);
+    let doc = lopdf::Document::load_mem(&bytes).unwrap();
+    let dictionary = doc
+        .objects
+        .values()
+        .find_map(|value| {
+            value.as_dict().ok().filter(|dict| {
+                dict.get(b"Type")
+                    .is_ok_and(|v| v.as_name().is_ok_and(|n| n == b"Sig"))
+            })
+        })
+        .unwrap();
+    let range: Vec<_> = dictionary
+        .get(b"ByteRange")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap() as u64)
+        .collect();
+    f.context(NOW, &f.crl, |services| {
+        let limits = ResourceLimits::default();
+        let budget = Arc::new(SharedBudget::new(limits.clone()).unwrap());
+        let report = {
+            let mut s = budget.begin(limits.clone(), Arc::new(Control)).unwrap();
+            let mut frozen = FrozenInput::capture(
+                Source::sequential(&mut Cursor::new(&bytes), None),
+                services.temporary,
+                &mut s,
+            )
+            .unwrap();
+            let mut view = PdfSnapshot::input(&mut frozen, &s).unwrap();
+            let metadata = view
+                .derive_region(
+                    Region {
+                        offset: range[1],
+                        len: range[2] - range[1],
+                    },
+                    &s,
+                    SnapshotEncoding::PdfByteString,
+                )
+                .unwrap();
+            let snapshot = Mutex::new(view);
+            let mut reports = verify_snapshot_pades(
+                AdesLevel::T,
+                &[SnapshotSignature {
+                    metadata: &metadata,
+                    regions: [
+                        Region {
+                            offset: range[0],
+                            len: range[1],
+                        },
+                        Region {
+                            offset: range[2],
+                            len: range[3],
+                        },
+                    ],
+                }],
+                &snapshot,
+                &[],
+                &[],
+                services,
+                &[SigAlg::RsaSha256],
+                &s,
+            )
+            .unwrap()
+            .into_iter();
+            let report = reports.next().unwrap();
+            assert!(reports.next().is_none());
+            drop(reports);
+            report
+        };
+        assert_eq!(report.verdict, Verdict::Valid);
+        assert_eq!(report.level(), Some(AdesLevel::T));
+        assert!(matches!(
+            budget.begin(limits.clone(), Arc::new(Control)),
+            Err(ProcessingError::CapacityExceeded)
+        ));
+        drop(report);
+        assert!(budget.begin(limits, Arc::new(Control)).is_ok());
+    });
+}
+
+struct ReplyHostClock {
+    tsa: MockTsa,
+    now: Arc<std::sync::Mutex<OffsetDateTime>>,
+    post_reply: OffsetDateTime,
+}
+impl oncl_pki::http::HttpTransport for ReplyHostClock {
+    fn send(
+        &self,
+        request: &oncl_pki::http::HttpRequest<'_>,
+    ) -> Result<oncl_pki::http::HttpReply, oncl_pki::http::HttpError> {
+        let reply = oncl_pki::http::HttpTransport::send(&self.tsa, request)?;
+        *self.now.lock().unwrap() = self.post_reply;
+        Ok(reply)
+    }
+}
+#[test]
+fn document_timestamp_uses_post_reply_host_time_without_future_or_backwards_grace() {
+    let f = Fixture::new();
+    let (b, _) = f.run(None, AdesLevel::B);
+    let checked = NOW + time::Duration::seconds(2);
+    for (started, issued, post_reply, valid) in [
+        (NOW, NOW + time::Duration::SECOND, checked, true),
+        (NOW, checked + time::Duration::SECOND, checked, false),
+        (checked, NOW, NOW, false),
+    ] {
+        f.context(NOW, &f.crl, |base| {
+            let now = Arc::new(std::sync::Mutex::new(started));
+            let clock = || *now.lock().unwrap();
+            let http = ReplyHostClock {
+                tsa: MockTsa::new(f.tsa.clone()).with_gen_time(issued),
+                now: now.clone(),
+                post_reply,
+            };
+            let validation = ValidationContext {
+                http: &http,
+                ..*base.validation
+            };
+            let mut profile = TsaProfile::kalkan_default();
+            profile.url = URL.into();
+            profile.method = TsaMethod::Post;
+            let mut tsa = TsaSpec::from(profile);
+            tsa.check_skew = None;
+            let services = AdesServices {
+                validation: &validation,
+                host_clock: Some(&clock),
+                network: base.network,
+                temporary: base.temporary,
+                limits: base.limits,
+                tsa: Some(&tsa),
+                material: ValidationMaterial {
+                    certificates: base.material.certificates,
+                    ocsp: base.material.ocsp,
+                    crls: base.material.crls,
+                },
+            };
+            let mut s = scope();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            let result = ades::extend(
+                AdesLevel::T,
+                Source::sequential(&mut Cursor::new(&b), None),
+                &PdfLimits::default(),
+                &services,
+                &[SigAlg::RsaSha256],
+                &mut output,
+                &s,
+            );
+            if valid {
+                let report = result.unwrap();
+                assert_eq!(report.verdict, Verdict::Valid);
+                let signer = &report.signatures()[0].validation;
+                assert_eq!(signer.checked_at, checked);
+                assert_eq!(signer.signers[0].proof_time.as_ref().unwrap().at(), issued);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(oncl_pdf::PdfError::Ades(
+                        oncl_pki::cms::ades::AdesError::Timestamp(
+                            oncl_pki::tsp::TspError::ClockSkew
+                        )
+                    ))
+                ));
+                assert!(output.copy_to(&mut Vec::new()).is_err());
+            }
+        });
+    }
+}
+#[test]
+fn every_source_cms_uses_one_fresh_final_host_instant() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let mut f = Fixture::new();
+    let (first, _) = f.run(None, AdesLevel::B);
+    let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+    spec.serial = vec![0x63, 0x17, 99];
+    f.doc.cert = issue_cert(&f.root, spec);
+    let second = f.context(NOW, &f.crl, |services| {
+        let mut s = scope();
+        let mut output = services.temporary.stage(&mut s).unwrap();
+        ades::sign(
+            AdesLevel::B,
+            Source::sequential(&mut Cursor::new(&first), None),
+            &PdfSignProfile::default(),
+            &mut f.doc.clone(),
+            services,
+            &mut output,
+            &s,
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        output.copy_to(&mut bytes).unwrap();
+        bytes
+    });
+    f.context(NOW, &f.crl, |base| {
+        let samples = AtomicUsize::new(0);
+        let clock = || {
+            let sample = samples.fetch_add(1, Ordering::SeqCst) + 1;
+            NOW + time::Duration::seconds(sample as i64)
+        };
+        let services = AdesServices {
+            validation: base.validation,
+            host_clock: Some(&clock),
+            network: base.network,
+            temporary: base.temporary,
+            limits: base.limits,
+            tsa: base.tsa,
+            material: ValidationMaterial {
+                certificates: base.material.certificates,
+                ocsp: base.material.ocsp,
+                crls: base.material.crls,
+            },
+        };
+        let report = ades::verify(
+            AdesLevel::B,
+            Source::sequential(&mut Cursor::new(&second), None),
+            &PdfLimits::default(),
+            &services,
+            &[SigAlg::RsaSha256],
+            &mut scope(),
+        )
+        .unwrap();
+        assert_eq!(report.verdict, Verdict::Valid);
+        assert_eq!(report.signatures().len(), 2);
+        assert_eq!(samples.load(Ordering::SeqCst), 1);
+        for signature in report.signatures() {
+            assert_eq!(
+                signature.validation.checked_at,
+                NOW + time::Duration::SECOND
+            );
+        }
+    });
+}
+
+#[test]
+fn final_pades_host_clock_must_not_move_backwards_from_initial_host_context() {
+    let f = Fixture::new();
+    let (bytes, _) = f.run(None, AdesLevel::B);
+    f.context(NOW, &f.crl, |base| {
+        let clock = || NOW - time::Duration::SECOND;
+        let services = AdesServices {
+            validation: base.validation,
+            host_clock: Some(&clock),
+            network: base.network,
+            temporary: base.temporary,
+            limits: base.limits,
+            tsa: base.tsa,
+            material: ValidationMaterial {
+                certificates: base.material.certificates,
+                ocsp: base.material.ocsp,
+                crls: base.material.crls,
+            },
+        };
+        let result = ades::verify(
+            AdesLevel::B,
+            Source::sequential(&mut Cursor::new(&bytes), None),
+            &PdfLimits::default(),
+            &services,
+            &[SigAlg::RsaSha256],
+            &mut scope(),
+        );
+        assert!(matches!(
+            result,
+            Err(oncl_pdf::PdfError::Ades(
+                oncl_pki::cms::ades::AdesError::Timestamp(oncl_pki::tsp::TspError::ClockSkew)
+            ))
+        ));
+    });
+}
+
+const LEVELS: [AdesLevel; 4] = [AdesLevel::B, AdesLevel::T, AdesLevel::Lt, AdesLevel::Lta];
+
+/// The second signer: another certificate from the same root, long lived.
+fn second_signer(f: &Fixture) -> KeyEntry {
+    let mut second = f.doc.clone();
+    let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+    spec.serial = vec![0x63, 0x17, 9];
+    spec.validity = *entry("user-rsa-sign").cert.tbs_certificate().validity();
+    second.cert = issue_cert(&f.root, spec);
+    second
+}
+/// One attempt to sign at `level` onto `old`, with every observable side effect.
+struct Onto {
+    /// Private-key uses of the new signer.
+    calls: usize,
+    /// TimeStampReq's the TSA received.
+    tsa_requests: usize,
+    /// Whether the staged output can be read back afterwards.
+    output_readable: bool,
+    result: Result<(Vec<u8>, ades::PadesReport), oncl_pdf::PdfError>,
+}
+fn run_onto(f: &Fixture, old: &[u8], level: AdesLevel) -> Onto {
+    let mut signer = CountSigner {
+        key: second_signer(f),
+        calls: 0,
+    };
+    let (tsa_requests, output_readable, result) = with_tsa_counted(f, NOW, NOW, |services, tsa| {
+        let mut s = scope();
+        let mut output = services.temporary.stage(&mut s).unwrap();
+        let signed = ades::sign(
+            level,
+            Source::sequential(&mut Cursor::new(old), None),
+            &PdfSignProfile::default(),
+            &mut signer,
+            services,
+            &mut output,
+            &s,
+        );
+        let mut bytes = Vec::new();
+        let readable = output.copy_to(&mut bytes).is_ok();
+        let result = signed.and_then(|_| {
+            assert!(bytes.starts_with(old), "previous revisions are untouched");
+            let report = ades::verify(
+                AdesLevel::B,
+                Source::sequential(&mut Cursor::new(&bytes), None),
+                &PdfLimits::default(),
+                services,
+                &[SigAlg::RsaSha256],
+                &mut s,
+            )?;
+            Ok((bytes, report))
+        });
+        (tsa.requests().len(), readable, result)
+    });
+    Onto {
+        calls: signer.calls,
+        tsa_requests,
+        output_readable,
+        result,
+    }
+}
+#[test]
+fn signing_onto_an_already_signed_pdf_succeeds_at_every_level() {
+    let f = Fixture::new();
+    for prior in LEVELS {
+        let (old, _) = f.run(None, prior);
+        for level in LEVELS {
+            let label = format!("{prior:?} then {level:?}");
+            let onto = run_onto(&f, &old, level);
+            let (_, report) = onto.result.unwrap_or_else(|e| panic!("{label}: {e:?}"));
+            assert!(onto.output_readable, "{label}");
+            // The provider signs exactly once, for the new signature only.
+            assert_eq!(onto.calls, 1, "{label}");
+            // TSA requests: the new signature's own timestamp (T and above), one
+            // document timestamp when an old B signature has to be brought to T before
+            // the DSS, and one closing document timestamp for LTA.
+            let timestamps = usize::from(level >= AdesLevel::T)
+                + usize::from(level >= AdesLevel::Lt && prior == AdesLevel::B)
+                + usize::from(level == AdesLevel::Lta);
+            assert_eq!(onto.tsa_requests, timestamps, "{label}");
+            assert_eq!(report.signatures().len(), 2, "{label}");
+            assert_eq!(report.verdict, Verdict::Valid, "{label}");
+            // `signature_levels` are ACHIEVED levels. An old signature is only elevated
+            // by the evidence appended for LT/LTA (DSS and document timestamps), never
+            // relabelled; the new one reaches at least the request. The aggregate is the
+            // minimum achieved level, not the requested one.
+            let old_expected = match level {
+                AdesLevel::B | AdesLevel::T => prior,
+                AdesLevel::Lt => AdesLevel::Lt,
+                AdesLevel::Lta => AdesLevel::Lta,
+            };
+            // A new T signature in a file that already holds DSS material is proven
+            // against it, so it achieves LT there (above the request, never below it).
+            let new_expected = if level == AdesLevel::T && prior >= AdesLevel::Lt {
+                AdesLevel::Lt
+            } else {
+                level
+            };
+            assert_eq!(
+                report.signature_levels(),
+                [Some(old_expected), Some(new_expected)],
+                "{label}"
+            );
+            assert_eq!(
+                report.level(),
+                Some(old_expected.min(new_expected)),
+                "{label}"
+            );
+        }
+    }
+}
+/// Signing onto `bytes` must be refused BEFORE any private use: a typed pre-key error
+/// (never `AfterKeyUse`), no provider call, no TSA request, no readable output.
+fn assert_refused_before_key_use(f: &Fixture, bytes: &[u8], what: &str) {
+    for level in LEVELS {
+        let onto = run_onto(f, bytes, level);
+        let error = onto
+            .result
+            .err()
+            .unwrap_or_else(|| panic!("{what} {level:?}"));
+        assert!(
+            !matches!(
+                error,
+                oncl_pdf::PdfError::Ades(oncl_pki::cms::ades::AdesError::AfterKeyUse { .. })
+            ),
+            "{what} {level:?}: {error:?}"
+        );
+        assert_eq!(onto.calls, 0, "{what} {level:?}: no private use");
+        assert_eq!(onto.tsa_requests, 0, "{what} {level:?}: no TSA request");
+        assert!(!onto.output_readable, "{what} {level:?}: no output");
+    }
+}
+fn flip_hex(byte: u8) -> u8 {
+    if byte == b'0' { b'1' } else { b'0' }
+}
+#[test]
+fn a_bad_present_signature_blocks_signing_before_any_key_use() {
+    // A revoked old signer.
+    let mut f = Fixture::new();
+    let (old, _) = f.run(None, AdesLevel::B);
+    f.crl = MockCrl::new(f.root.clone())
+        .with_this_update(NOW - time::Duration::MINUTE)
+        .next_update(Some(NOW + time::Duration::HOUR))
+        .revoke(
+            f.doc.cert.tbs_certificate().serial_number().as_bytes(),
+            NOW - time::Duration::HOUR,
+        )
+        .der();
+    assert_refused_before_key_use(&f, &old, "revoked old signer");
+}
+#[test]
+fn a_tampered_old_signature_timestamp_or_dss_blocks_signing_before_any_key_use() {
+    let f = Fixture::new();
+    // The control: the same untampered files accept a new signature at every level.
+    for prior in [AdesLevel::B, AdesLevel::T, AdesLevel::Lta] {
+        let (old, _) = f.run(None, prior);
+        assert!(
+            run_onto(&f, &old, AdesLevel::Lta).result.is_ok(),
+            "{prior:?}"
+        );
+    }
+    let valid = |bytes: &[u8]| {
+        f.inspect(bytes, AdesLevel::B, NOW, &f.crl)
+            .is_ok_and(|report| report.verdict == Verdict::Valid)
+    };
+    // (1) Signed document bytes of an old B signature (inside its ByteRange) changed.
+    let (b, _) = f.run(None, AdesLevel::B);
+    let mut content = b.clone();
+    let at = content
+        .windows(6)
+        .position(|part| part == b"endobj")
+        .unwrap();
+    content[at + 5] = b'k';
+    assert!(!valid(&content));
+    assert_refused_before_key_use(&f, &content, "tampered signed content");
+    // (2) The old signature value itself changed.
+    let (t, _) = f.run(None, AdesLevel::T);
+    let contents = t
+        .windows(b"/Contents <".len())
+        .position(|part| part == b"/Contents <")
+        .unwrap()
+        + b"/Contents <".len();
+    let end = contents + t[contents..].iter().position(|b| *b == b'>').unwrap();
+    let last = contents + t[contents..end].iter().rposition(|b| *b != b'0').unwrap();
+    // (3) The signature timestamp token of an old T signature: its tail is the TSA's
+    // own signature value.
+    let mut token = t.clone();
+    token[last - 40] = flip_hex(token[last - 40]);
+    assert!(!valid(&token));
+    assert_refused_before_key_use(&f, &token, "bad old timestamp token");
+    let mut signature = t.clone();
+    let offset = signature[contents..end]
+        .windows(2)
+        .position(|part| part == b"30")
+        .unwrap();
+    // The first CMS bytes are structure: any change fails the old signature.
+    signature[contents + offset + 2] = flip_hex(signature[contents + offset + 2]);
+    assert!(!valid(&signature));
+    assert_refused_before_key_use(&f, &signature, "changed old CMS");
+    // (4) A bad entry in the DSS of an old LTA file.
+    let (lta, _) = f.run(None, AdesLevel::Lta);
+    let mut dss = lta.clone();
+    let offset = dss
+        .windows(f.crl.len())
+        .position(|part| part == f.crl)
+        .unwrap();
+    dss[offset + f.crl.len() - 1] ^= 1;
+    assert!(!valid(&dss));
+    assert_refused_before_key_use(&f, &dss, "altered DSS entry");
+    // (5) The closing document timestamp of the old LTA file.
+    let mut closing = lta.clone();
+    let start = closing
+        .windows(b"/ETSI.RFC3161".len())
+        .rposition(|part| part == b"/ETSI.RFC3161")
+        .unwrap();
+    let gap = start
+        + closing[start..]
+            .windows(11)
+            .position(|part| part == b"/Contents <")
+            .unwrap()
+        + 11;
+    closing[gap + 100] ^= 1;
+    assert!(!valid(&closing));
+    assert_refused_before_key_use(&f, &closing, "altered document timestamp");
+}
+#[test]
+fn a_revision_appended_over_signed_ranges_is_rejected_by_the_whole_file_checks() {
+    let f = Fixture::new();
+    let (old, _) = f.run(None, AdesLevel::B);
+    let (two, _) = run_onto(&f, &old, AdesLevel::B).result.unwrap();
+    let doc = lopdf::Document::load_mem(&two).unwrap();
+    let page = *doc.get_pages().values().next().unwrap();
+    let mut page_value = doc.get_object(page).unwrap().as_dict().unwrap().clone();
+    page_value.set("MediaBox", vec![0.into(), 0.into(), 1.into(), 1.into()]);
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let mut catalog = doc.get_object(root).unwrap().as_dict().unwrap().clone();
+    catalog.set("Perms", lopdf::Object::Name(b"Forged".to_vec()));
+    let forgeries = [
+        (
+            "page changed under both signatures",
+            vec![(page, lopdf::Object::Dictionary(page_value))],
+        ),
+        (
+            "catalog permissions injected",
+            vec![(root, lopdf::Object::Dictionary(catalog))],
+        ),
+    ];
+    for (what, objects) in forgeries {
+        let forged = append_objects(&two, objects);
+        // Neither the verifier nor a later signing operation accepts it.
+        assert!(
+            !f.inspect(&forged, AdesLevel::B, NOW, &f.crl)
+                .is_ok_and(|report| report.verdict == Verdict::Valid),
+            "{what}"
+        );
+        assert_refused_before_key_use(&f, &forged, what);
+    }
+}
+/// Moves the host clock when the TSA replies, i.e. after the private key was used.
+struct JumpAfterReply {
+    tsa: MockTsa,
+    now: Arc<std::sync::Mutex<OffsetDateTime>>,
+    after: OffsetDateTime,
+}
+impl oncl_pki::http::HttpTransport for JumpAfterReply {
+    fn send(
+        &self,
+        request: &oncl_pki::http::HttpRequest<'_>,
+    ) -> Result<oncl_pki::http::HttpReply, oncl_pki::http::HttpError> {
+        let reply = oncl_pki::http::HttpTransport::send(&self.tsa, request)?;
+        *self.now.lock().unwrap() = self.after;
+        Ok(reply)
+    }
+}
+#[test]
+fn final_check_rejects_an_old_signature_that_stopped_validating_after_key_use() {
+    use der::asn1::UtcTime;
+    let mut f = Fixture::new();
+    // The old signer's certificate ends 30 minutes after NOW.
+    let mut spec = TestCertSpec::from_cert(&f.doc.cert);
+    spec.validity.not_after = x509_cert::time::Time::UtcTime(
+        UtcTime::from_unix_duration(std::time::Duration::from_secs(
+            (NOW + time::Duration::minutes(30)).unix_timestamp() as u64,
+        ))
+        .unwrap(),
+    );
+    f.doc.cert = issue_cert(&f.root, spec);
+    let (old, _) = f.run(None, AdesLevel::B);
+    for (after, expect_ok) in [
+        // Control: the clock moves on, the old certificate is still valid.
+        (NOW + time::Duration::minutes(10), true),
+        // Past the old certificate's end, before the CRL's nextUpdate.
+        (NOW + time::Duration::minutes(40), false),
+    ] {
+        let mut signer = CountSigner {
+            key: second_signer(&f),
+            calls: 0,
+        };
+        let (result, readable) = f.context(NOW, &f.crl, |base| {
+            let now = Arc::new(std::sync::Mutex::new(NOW));
+            let clock = || *now.lock().unwrap();
+            let http = JumpAfterReply {
+                tsa: MockTsa::new(f.tsa.clone()).with_gen_time(NOW),
+                now: now.clone(),
+                after,
+            };
+            let validation = ValidationContext {
+                http: &http,
+                ..*base.validation
+            };
+            let mut profile = TsaProfile::kalkan_default();
+            profile.url = URL.into();
+            profile.method = TsaMethod::Post;
+            let mut tsa = TsaSpec::from(profile);
+            tsa.check_skew = None;
+            let services = AdesServices {
+                validation: &validation,
+                host_clock: Some(&clock),
+                network: base.network,
+                temporary: base.temporary,
+                limits: base.limits,
+                tsa: Some(&tsa),
+                material: ValidationMaterial {
+                    certificates: base.material.certificates,
+                    ocsp: base.material.ocsp,
+                    crls: base.material.crls,
+                },
+            };
+            let mut s = scope();
+            let mut output = services.temporary.stage(&mut s).unwrap();
+            let result = ades::sign(
+                AdesLevel::T,
+                Source::sequential(&mut Cursor::new(&old), None),
+                &PdfSignProfile::default(),
+                &mut signer,
+                &services,
+                &mut output,
+                &s,
+            );
+            (result, output.copy_to(&mut Vec::new()).is_ok())
+        });
+        assert_eq!(signer.calls, 1, "{after}: the key was used once");
+        if expect_ok {
+            result.unwrap();
+            assert!(readable);
+        } else {
+            // Fail closed and honest: no output, and the key use is reported.
+            assert!(
+                matches!(
+                    result,
+                    Err(oncl_pdf::PdfError::Ades(
+                        oncl_pki::cms::ades::AdesError::AfterKeyUse {
+                            applied: oncl_pki::key::AppliedState::Applied,
+                            ..
+                        }
+                    ))
+                ),
+                "{result:?}"
+            );
+            assert!(!readable);
+        }
+    }
+}
+
+// ---- DSS evidence streams are recorded as regions (D1) ------------------------------------
+
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> usize {
+    from + hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("needle")
+}
+
+/// `lt` with the DSS CRL stream whose body is `old_crl` replaced by `header` (the dictionary
+/// and `stream` keyword line) and `body`, the incremental cross-reference stream shifted to
+/// match, so every other object, the xref and `startxref` stay consistent.
+fn replace_crl_stream(lt: &[u8], old_crl: &[u8], header: &str, body: &[u8]) -> Vec<u8> {
+    let body_pos = find_from(lt, old_crl, 0);
+    let old_header = format!("<< /Length {} >>\nstream\n", old_crl.len());
+    let start = body_pos - old_header.len();
+    assert_eq!(&lt[start..body_pos], old_header.as_bytes());
+    let old_end = body_pos + old_crl.len();
+    let mut out = lt[..start].to_vec();
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(body);
+    out.extend_from_slice(&lt[old_end..]);
+    let delta = (header.len() + body.len()) as i64 - (old_header.len() + old_crl.len()) as i64;
+    // The last revision's xref is a stream of 11-byte rows: type, 8-byte offset, generation.
+    let xref = find_from(&out, b"/Type /XRef", start);
+    let length_at = find_from(&out, b"/Length ", xref) + 8;
+    let digits = out[length_at..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    let length: usize = std::str::from_utf8(&out[length_at..length_at + digits])
+        .unwrap()
+        .parse()
+        .unwrap();
+    let rows = find_from(&out, b"stream\n", xref) + 7;
+    for row in 0..length / 11 {
+        let at = rows + row * 11;
+        let offset = u64::from_be_bytes(out[at + 1..at + 9].try_into().unwrap());
+        if out[at] == 1 && offset > start as u64 {
+            out[at + 1..at + 9].copy_from_slice(&((offset as i64 + delta) as u64).to_be_bytes());
+        }
+    }
+    let sx = out.windows(10).rposition(|w| w == b"startxref\n").unwrap() + 10;
+    let end = find_from(&out, b"\n", sx);
+    let value: i64 = std::str::from_utf8(&out[sx..end]).unwrap().parse().unwrap();
+    out.splice(sx..end, (value + delta).to_string().bytes());
+    out
+}
+
+fn lt_with_crl(f: &Fixture) -> Vec<u8> {
+    let (t, _) = f.run(None, AdesLevel::T);
+    f.run(Some(&t), AdesLevel::Lt).0
+}
+
+fn wide_limits() -> EvidenceLimits {
+    EvidenceLimits {
+        max_items: 64,
+        max_bytes: 16 << 20,
+        max_item_bytes: 1 << 20,
+        max_crl_bytes: 16 << 20,
+        max_crl_item_bytes: 8 << 20,
+        max_total_bytes: 16 << 20,
+        max_chain_len: 8,
+        max_proofs: 16,
+        max_coverage_parts: 1024,
+        max_coverage_bytes: 10_737_418_240,
+    }
+}
+
+/// A current CRL of the fixture root that is `target` bytes of DER (padded by one unknown
+/// non-critical CRL extension, whose length fields are stable in this size range).
+fn root_crl_of_size(f: &Fixture, target: usize) -> Vec<u8> {
+    use der::asn1::OctetString;
+    use x509_cert::ext::Extension;
+    let build = |pad: usize| {
+        MockCrl::new(f.root.clone())
+            .with_this_update(NOW - time::Duration::MINUTE)
+            .next_update(Some(NOW + time::Duration::HOUR))
+            .extension(Extension {
+                extn_id: "1.2.3.4.5".parse().unwrap(),
+                critical: false,
+                extn_value: OctetString::new(vec![0u8; pad]).unwrap(),
+            })
+            .der()
+    };
+    let first = build(target / 2);
+    let pad = target / 2 + target - first.len();
+    let exact = build(pad);
+    assert_eq!(exact.len(), target);
+    exact
+}
+
+fn verify_lt(f: &Fixture, bytes: &[u8]) -> Result<ades::PadesReport, oncl_pdf::PdfError> {
+    verify_lt_budget(f, bytes, None)
+}
+
+fn verify_lt_budget(
+    f: &Fixture,
+    bytes: &[u8],
+    memory: Option<u64>,
+) -> Result<ades::PadesReport, oncl_pdf::PdfError> {
+    f.context_limits(NOW, &[], wide_limits(), |services| {
+        let mut scope = match memory {
+            Some(memory) => scope_with_memory(memory),
+            None => scope(),
+        };
+        ades::verify(
+            AdesLevel::Lt,
+            Source::sequential(&mut Cursor::new(bytes), None),
+            &PdfLimits::default(),
+            services,
+            &[SigAlg::RsaSha256],
+            &mut scope,
+        )
+    })
+}
+
+fn scope_with_memory(memory: u64) -> ResourceScope {
+    let limits = ResourceLimits {
+        memory_bytes: memory,
+        metadata_bytes: 64 << 20,
+        temp_bytes: 256 << 20,
+        ..ResourceLimits::default()
+    };
+    Arc::new(SharedBudget::new(limits.clone()).unwrap())
+        .begin(limits, Arc::new(Control))
+        .unwrap()
+}
+
+#[test]
+fn dss_crl_stream_over_one_mib_is_a_region_not_a_window() {
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    // The patcher alone changes nothing.
+    let same = replace_crl_stream(
+        &lt,
+        &f.crl,
+        &format!("<< /Length {} >>\nstream\n", f.crl.len()),
+        &f.crl,
+    );
+    assert_eq!(same, lt);
+    // A 3 MiB CRL (the reader's old window and decode caps are 1 MiB and 4 MiB) verifies.
+    let big = root_crl_of_size(&f, 3 << 20);
+    let patched = replace_crl_stream(
+        &lt,
+        &f.crl,
+        &format!("<< /Length {} >>\nstream\n", big.len()),
+        &big,
+    );
+    let report = verify_lt(&f, &patched).unwrap();
+    assert_eq!(report.verdict, Verdict::Valid);
+}
+
+#[test]
+fn dss_crl_stream_length_past_the_end_of_file_is_refused() {
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    let header = format!("<< /Length {} >>\nstream\n", lt.len() + 4096);
+    let patched = replace_crl_stream(&lt, &f.crl, &header, &f.crl);
+    assert!(matches!(
+        verify_lt(&f, &patched),
+        Err(oncl_pdf::PdfError::Malformed("stream beyond the source"))
+    ));
+}
+
+#[test]
+fn dss_crl_stream_length_off_the_endstream_keyword_is_refused() {
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    // One short (lands inside the body) and two long (lands inside the keyword).
+    for length in [f.crl.len() - 1, f.crl.len() + 2] {
+        let header = format!("<< /Length {length} >>\nstream\n");
+        let patched = replace_crl_stream(&lt, &f.crl, &header, &f.crl);
+        assert!(
+            matches!(
+                verify_lt(&f, &patched),
+                Err(oncl_pdf::PdfError::Malformed(_))
+            ),
+            "length {length}"
+        );
+    }
+}
+
+#[test]
+fn dss_crl_stream_with_a_filter_is_refused() {
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    let header = format!(
+        "<< /Length {} /Filter /FlateDecode >>\nstream\n",
+        f.crl.len()
+    );
+    let patched = replace_crl_stream(&lt, &f.crl, &header, &f.crl);
+    assert!(matches!(
+        verify_lt(&f, &patched),
+        Err(oncl_pdf::PdfError::Unsupported("filtered evidence stream"))
+    ));
+}
+
+#[test]
+fn dss_crl_stream_with_an_indirect_length_is_refused() {
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    let header = "<< /Length 21 0 R >>\nstream\n";
+    let patched = replace_crl_stream(&lt, &f.crl, header, &f.crl);
+    assert!(verify_lt(&f, &patched).is_err());
+}
+
+fn small_pdf_limits() -> PdfLimits {
+    PdfLimits {
+        max_object_bytes: 1 << 16,
+        max_decoded_bytes: 1 << 18,
+        max_objects: 512,
+        ..PdfLimits::default()
+    }
+}
+
+fn refused_for_memory(result: Result<ades::PadesReport, oncl_pdf::PdfError>) -> bool {
+    matches!(&result, Err(error) if format!("{error:?}").contains("MemoryLimit"))
+}
+
+/// The LT document whose DSS CRL is `crl`.
+fn lt_with_dss_crl(f: &Fixture, lt: &[u8], crl: &[u8]) -> Vec<u8> {
+    replace_crl_stream(
+        lt,
+        &f.crl,
+        &format!("<< /Length {} >>\nstream\n", crl.len()),
+        crl,
+    )
+}
+
+fn verify_small(
+    f: &Fixture,
+    bytes: &[u8],
+    level: AdesLevel,
+    crl: &[u8],
+    memory: u64,
+) -> Result<ades::PadesReport, oncl_pdf::PdfError> {
+    f.context_limits(NOW, crl, wide_limits(), |services| {
+        ades::verify(
+            level,
+            Source::sequential(&mut Cursor::new(bytes), None),
+            &small_pdf_limits(),
+            services,
+            &[SigAlg::RsaSha256],
+            &mut scope_with_memory(memory << 20),
+        )
+    })
+}
+
+const AT_LIMIT: usize = oncl_pki::crl::MAX_BER_CRL_LEN;
+
+#[test]
+fn snapshot_charge_applies_the_scan_in_place_rule_only_over_the_ber_limit() {
+    // Same document, same small PDF reader, 64 MiB of RAM: a DSS CRL of exactly the BER limit
+    // may be BER and keeps the amplified charge (refused); one byte more is DER only and is
+    // charged once (admitted).
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    let at = lt_with_dss_crl(&f, &lt, &root_crl_of_size(&f, AT_LIMIT));
+    let over = lt_with_dss_crl(&f, &lt, &root_crl_of_size(&f, AT_LIMIT + 1));
+    assert!(refused_for_memory(verify_small(
+        &f,
+        &at,
+        AdesLevel::Lt,
+        &[],
+        64
+    )));
+    assert_eq!(
+        verify_small(&f, &over, AdesLevel::Lt, &[], 64)
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+}
+
+#[test]
+fn snapshot_charge_applies_the_same_rule_to_caller_supplied_crls() {
+    // No DSS: the CRL is operator material (`services.material.crls`).
+    let f = Fixture::new();
+    let (t, _) = f.run(None, AdesLevel::T);
+    let at = root_crl_of_size(&f, AT_LIMIT);
+    let over = root_crl_of_size(&f, AT_LIMIT + 1);
+    assert!(refused_for_memory(verify_small(
+        &f,
+        &t,
+        AdesLevel::B,
+        &at,
+        64
+    )));
+    assert_eq!(
+        verify_small(&f, &t, AdesLevel::B, &over, 64)
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+}
+
+#[test]
+fn evidence_readback_charge_applies_the_rule_only_over_the_ber_limit() {
+    // 160 MiB lets the snapshot charge through, so the refusal below is the evidence
+    // readback's: a CRL of exactly the BER limit is read back with amplification.
+    let f = Fixture::new();
+    let lt = lt_with_crl(&f);
+    let at = lt_with_dss_crl(&f, &lt, &root_crl_of_size(&f, AT_LIMIT));
+    let over = lt_with_dss_crl(&f, &lt, &root_crl_of_size(&f, AT_LIMIT + 1));
+    let error = verify_small(&f, &at, AdesLevel::Lt, &[], 160).unwrap_err();
+    assert!(format!("{error:?}").contains("Evidence"), "{error:?}");
+    assert_eq!(
+        verify_small(&f, &over, AdesLevel::Lt, &[], 160)
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+    // And a CRL over the limit is not amplified at the readback: 24 MiB would refuse a
+    // 32x charge of 1 MiB but admits the single charge.
+    assert_eq!(
+        verify_small(&f, &over, AdesLevel::Lt, &[], 24)
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+    let (t, _) = f.run(None, AdesLevel::T);
+    let supplied = root_crl_of_size(&f, AT_LIMIT + 1);
+    assert_eq!(
+        verify_small(&f, &t, AdesLevel::B, &supplied, 24)
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+}
+
+#[test]
+fn lt_embedded_status_is_judged_at_the_proof_time_not_now() {
+    let f = Fixture::new();
+    for level in [AdesLevel::Lt, AdesLevel::Lta] {
+        let (signed, _) = f.run(None, level);
+        for (label, delta) in [
+            ("+0", time::Duration::ZERO),
+            ("+6m", time::Duration::minutes(6)),
+            ("+1h", time::Duration::HOUR),
+            ("+1d", time::Duration::DAY),
+            ("+400d", time::Duration::days(400)),
+        ] {
+            // The DSS carries the status: no extra material is given.
+            let report = f.inspect(&signed, level, NOW + delta, &[]).unwrap();
+            assert_eq!(report.verdict, Verdict::Valid, "{level:?} {label}");
+        }
+    }
+}
+#[test]
+fn lt_embedded_status_control_cases_are_never_valid() {
+    let hour = time::Duration::HOUR;
+    let doc_serial = [0x63, 0x17, 2];
+    let mut worlds: Vec<(&str, Vec<u8>, &[time::Duration])> = Vec::new();
+    let all = [time::Duration::ZERO, hour, time::Duration::DAY];
+    let base = Fixture::new();
+    let crl = |this: OffsetDateTime| {
+        MockCrl::new(base.root.clone())
+            .with_this_update(this)
+            .next_update(Some(this + 3 * hour))
+    };
+    // Stale: its nextUpdate (an hour before the proof) has passed at the proof.
+    worlds.push((
+        "stale",
+        MockCrl::new(base.root.clone())
+            .with_this_update(NOW - 2 * hour)
+            .next_update(Some(NOW - hour))
+            .der(),
+        &all,
+    ));
+    worlds.push((
+        "revoked at P",
+        crl(NOW - time::Duration::MINUTE)
+            .revoke(&doc_serial, NOW - time::Duration::minutes(10))
+            .der(),
+        &all,
+    ));
+    let mut damaged = crl(NOW - time::Duration::MINUTE).der();
+    let last = damaged.len() - 1;
+    damaged[last] ^= 1;
+    worlds.push(("bad signature", damaged, &all));
+    for (label, crl_der, deltas) in worlds {
+        let mut f = Fixture::new();
+        f.crl = crl_der;
+        let Ok((signed, report)) = f.try_run_from(
+            None,
+            AdesLevel::Lt,
+            include_bytes!("fixtures/external-multipage.pdf"),
+        ) else {
+            continue;
+        };
+        assert_ne!(report.verdict, Verdict::Valid, "{label} at signing");
+        for &delta in deltas {
+            let verdict = f.inspect(&signed, AdesLevel::Lt, NOW + delta, &[]);
+            assert!(
+                verdict.is_ok_and(|r| r.verdict != Verdict::Valid),
+                "{label} +{delta}"
+            );
+        }
+    }
+}
+
+#[test]
+fn lt_pdf_with_damaged_embedded_crl_is_not_valid_an_hour_later() {
+    let f = Fixture::new();
+    let (signed, _) = f.run(None, AdesLevel::Lt);
+    let hour = NOW + time::Duration::HOUR;
+    assert_eq!(
+        f.inspect(&signed, AdesLevel::Lt, hour, &[])
+            .unwrap()
+            .verdict,
+        Verdict::Valid
+    );
+    let at = signed
+        .windows(f.crl.len())
+        .position(|window| window == f.crl.as_slice())
+        .expect("the DSS carries the CRL uncompressed");
+    let mut damaged = signed.clone();
+    damaged[at + f.crl.len() - 1] ^= 1;
+    for now in [NOW, hour] {
+        // A completed verification whose failure is the status one, not a parse error.
+        let report = f.inspect(&damaged, AdesLevel::Lt, now, &[]).unwrap();
+        let signer = &report.signatures()[0].validation.signers[0];
+        assert_ne!(report.verdict, Verdict::Valid, "{now}");
+        assert_eq!(
+            signer.revocation,
+            oncl_pki::validation::CheckStatus::Unavailable,
+            "{now}"
+        );
+        assert!(
+            signer
+                .reasons
+                .contains(&oncl_pki::validation::ValidationReason::RevocationUnavailable),
+            "{now}: {:?}",
+            signer.reasons
+        );
+    }
+}
+
+// ---- Signature-widget append and DSS restatement grammar (always run) ----
+
+/// The shape NCANode writes for a document timestamp: an invisible widget added to the
+/// page's `/Annots`, an empty appearance, and the timestamp dictionary. Every field is a
+/// raw PDF fragment so a test can break exactly one rule.
+struct Widget {
+    ft: &'static str,
+    flags: &'static str,
+    rect: &'static str,
+    extra: &'static str,
+    ap_length: &'static str,
+    ap_body: &'static str,
+    ap_bbox: &'static str,
+    ap: bool,
+    page_extra: &'static str,
+    page_annots: Option<&'static str>,
+    rewrite_page: bool,
+    value: Option<&'static str>,
+    value_type: &'static str,
+    sub_filter: &'static str,
+}
+impl Widget {
+    fn valid() -> Self {
+        Self {
+            ft: "/Sig",
+            flags: "132",
+            rect: "[0.0 0.0 0.0 0.0]",
+            extra: "",
+            ap_length: "0",
+            ap_body: "",
+            ap_bbox: "[0.0 0.0 0.0 0.0]",
+            ap: true,
+            page_extra: "",
+            page_annots: None,
+            rewrite_page: true,
+            value: Some(""),
+            value_type: "/DocTimeStamp",
+            sub_filter: "/ETSI.RFC3161",
+        }
+    }
+}
+/// `lta` plus one revision that appends a timestamp widget as described by `w`.
+fn append_widget(lta: &[u8], w: &Widget) -> Vec<u8> {
+    let doc = lopdf::Document::load_mem(lta).unwrap();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let catalog = doc.get_object(root).unwrap().as_dict().unwrap();
+    let form_id = catalog.get(b"AcroForm").unwrap().as_reference().unwrap();
+    let mut form = doc.get_object(form_id).unwrap().as_dict().unwrap().clone();
+    let page_id = *doc.get_pages().values().next().unwrap();
+    let page = doc.get_object(page_id).unwrap().as_dict().unwrap().clone();
+    assert!(!page.has(b"Annots"), "fixture page has no annotations");
+    let token = doc
+        .objects
+        .values()
+        .filter_map(|o| o.as_dict().ok())
+        .find(|d| {
+            d.get(b"Type")
+                .and_then(|t| t.as_name())
+                .is_ok_and(|n| n == b"DocTimeStamp")
+        })
+        .and_then(|d| d.get(b"Contents").ok())
+        .and_then(|c| c.as_str().ok())
+        .expect("own LTA carries a document timestamp")
+        .to_vec();
+    // A VRI key is the hash of /Contents: the copy must differ from the original token
+    // (its last data byte, so the DER stays well formed).
+    let mut token = token;
+    let last = token.iter().rposition(|b| *b != 0).unwrap();
+    token[last] ^= 1;
+    let (widget, ap, stream, value) = (
+        doc.max_id + 1,
+        doc.max_id + 2,
+        doc.max_id + 3,
+        doc.max_id + 4,
+    );
+    let mut fields = form.get(b"Fields").unwrap().as_array().unwrap().clone();
+    fields.push(lopdf::Object::Reference((widget, 0)));
+    form.set("Fields", lopdf::Object::Array(fields));
+    let marker = lta.windows(9).rposition(|b| b == b"startxref").unwrap() + 9;
+    let previous: u64 = std::str::from_utf8(&lta[marker..])
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut out = lta.to_vec();
+    out.push(b'\n');
+    let mut offsets = Vec::new();
+    let mut object = |out: &mut Vec<u8>, id: u32, body: &[u8]| {
+        offsets.push((id, out.len()));
+        out.extend_from_slice(format!("{id} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    };
+    if w.rewrite_page {
+        let mut dict = page.clone();
+        let annots = w.page_annots.map_or_else(
+            || format!("[{widget} 0 R]"),
+            |a| a.replace("{W}", &widget.to_string()),
+        );
+        let mut body = Vec::new();
+        encode_object(
+            &lopdf::Object::Dictionary(std::mem::take(&mut dict)),
+            &mut body,
+        );
+        body.truncate(body.len() - 2);
+        body.extend_from_slice(format!(" /Annots {annots} {} >>", w.page_extra).as_bytes());
+        object(&mut out, page_id.0, &body);
+    }
+    let mut body = Vec::new();
+    encode_object(&lopdf::Object::Dictionary(form), &mut body);
+    object(&mut out, form_id.0, &body);
+    let ap_entry = if w.ap {
+        format!("/AP {ap} 0 R")
+    } else {
+        String::new()
+    };
+    let widget_body = format!(
+        "<< /FT {} /Type /Annot /Subtype /Widget /F {} /T (Signature9) {} /P {} 0 R /Rect {} {} {} >>",
+        w.ft,
+        w.flags,
+        w.value.map_or(String::new(), |_| format!("/V {value} 0 R")),
+        page_id.0,
+        w.rect,
+        ap_entry,
+        w.extra,
+    );
+    object(&mut out, widget, widget_body.as_bytes());
+    if w.ap {
+        object(&mut out, ap, format!("<< /N {stream} 0 R >>").as_bytes());
+        let body = format!(
+            "<< /Length {} /Type /XObject /Subtype /Form /BBox {} >>\nstream\n{}\nendstream",
+            w.ap_length, w.ap_bbox, w.ap_body
+        );
+        object(&mut out, stream, body.as_bytes());
+    }
+    if let Some(extra) = w.value {
+        let hex: String = token.iter().map(|b| format!("{b:02X}")).collect();
+        let body = format!(
+            "<< /Type {} /Filter /Adobe.PPKLite /SubFilter {} /ByteRange [0 0000000000 0000000000 0000000000] /Contents <{hex}> {extra} >>",
+            w.value_type, w.sub_filter,
+        );
+        object(&mut out, value, body.as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n");
+    offsets.sort_unstable();
+    for (id, offset) in &offsets {
+        out.extend_from_slice(format!("{id} 1\n{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Prev {previous} /Root ",
+            doc.max_id + 5
+        )
+        .as_bytes(),
+    );
+    encode_object(doc.trailer.get(b"Root").unwrap(), &mut out);
+    for key in [b"Info".as_slice(), b"ID"] {
+        if let Ok(value) = doc.trailer.get(key) {
+            out.extend_from_slice(b" /");
+            out.extend_from_slice(key);
+            out.push(b' ');
+            encode_object(value, &mut out);
+        }
+    }
+    out.extend_from_slice(format!(" >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    // Patch the ByteRange of the timestamp dictionary now that the extent is known.
+    if w.value.is_some() {
+        let start = lta.len();
+        let open = start
+            + out[start..]
+                .windows(b"/Contents <".len())
+                .position(|x| x == b"/Contents <")
+                .unwrap()
+            + b"/Contents ".len();
+        let close = open + out[open..].iter().position(|b| *b == b'>').unwrap() + 1;
+        let range = format!("[0 {open:010} {close:010} {:010}]", out.len() - close);
+        let at = out[start..]
+            .windows(b"[0 0000000000 0000000000 0000000000]".len())
+            .position(|x| x == b"[0 0000000000 0000000000 0000000000]")
+            .unwrap()
+            + start;
+        out[at..at + range.len()].copy_from_slice(range.as_bytes());
+    }
+    out
+}
+
+fn widget_lta(f: &Fixture) -> Vec<u8> {
+    f.run(None, AdesLevel::Lta).0
+}
+/// The grammar accepts `bytes` (it is then judged like any other document; a timestamp
+/// copied from another revision legitimately does not verify) or refuses with `Unsupported`.
+fn widget_grammar(f: &Fixture, bytes: &[u8]) -> Result<(), String> {
+    match f.inspect(bytes, AdesLevel::B, NOW, &f.crl) {
+        Err(oncl_pdf::PdfError::Unsupported(m)) => Err(m.to_string()),
+        Err(other) => Err(format!("{other:?}")),
+        Ok(_) => Ok(()),
+    }
+}
+#[test]
+fn invisible_timestamp_widget_append_is_accepted() {
+    let f = Fixture::new();
+    let lta = widget_lta(&f);
+    let got = widget_grammar(&f, &append_widget(&lta, &Widget::valid()));
+    assert_eq!(got, Ok(()), "{got:?}");
+}
+#[test]
+fn timestamp_widget_grammar_refuses_every_deviation() {
+    const FIELD: &str = "non-signature new field";
+    let f = Fixture::new();
+    let lta = widget_lta(&f);
+    let cases: Vec<(&str, Widget, &str)> = vec![
+        (
+            "AA",
+            Widget {
+                extra: "/AA << /E << /S /JavaScript /JS (x) >> >>",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "A",
+            Widget {
+                extra: "/A << /S /JavaScript /JS (x) >>",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "JS",
+            Widget {
+                extra: "/JS (app.alert(1))",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "Kids",
+            Widget {
+                extra: "/Kids [1 0 R]",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "Tx",
+            Widget {
+                ft: "/Tx",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "Btn",
+            Widget {
+                ft: "/Btn",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "hidden",
+            Widget {
+                flags: "2",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "real flags",
+            Widget {
+                flags: "132.0",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "rect wide",
+            Widget {
+                rect: "[0 0 5 0]",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "rect float",
+            Widget {
+                rect: "[0.0 0.0 0.5 0.5]",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "rect negative",
+            Widget {
+                rect: "[0 0 -1 0]",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "rect tiny",
+            Widget {
+                rect: "[0 0 0 0.0001]",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "rect short",
+            Widget {
+                rect: "[0 0 0]",
+                ..Widget::valid()
+            },
+            FIELD,
+        ),
+        (
+            "AP content",
+            Widget {
+                ap_length: "3",
+                ap_body: "q Q",
+                ..Widget::valid()
+            },
+            "non-empty signature appearance",
+        ),
+        (
+            "AP bbox",
+            Widget {
+                ap_bbox: "[0 0 10 10]",
+                ..Widget::valid()
+            },
+            "non-empty signature appearance",
+        ),
+        (
+            "page key",
+            Widget {
+                page_extra: "/Rotate 90",
+                ..Widget::valid()
+            },
+            "page change beyond a signature widget",
+        ),
+        (
+            "annots replaced",
+            Widget {
+                page_annots: Some("[{W} 0 R {W} 0 R]"),
+                ..Widget::valid()
+            },
+            "page change beyond a signature widget",
+        ),
+        (
+            "annots foreign",
+            Widget {
+                page_annots: Some("[1 0 R {W} 0 R]"),
+                ..Widget::valid()
+            },
+            "page change beyond a signature widget",
+        ),
+        (
+            "annots empty",
+            Widget {
+                page_annots: Some("[]"),
+                ..Widget::valid()
+            },
+            "page change beyond a signature widget",
+        ),
+        (
+            "orphan page",
+            Widget {
+                rewrite_page: false,
+                ..Widget::valid()
+            },
+            "signature widget page not updated",
+        ),
+        (
+            "no value",
+            Widget {
+                value: None,
+                ..Widget::valid()
+            },
+            "missing dictionary entry",
+        ),
+        (
+            "value type",
+            Widget {
+                value_type: "/Foo",
+                ..Widget::valid()
+            },
+            "document timestamp dictionary",
+        ),
+    ];
+    for (name, widget, message) in cases {
+        let got = widget_grammar(&f, &append_widget(&lta, &widget));
+        let got = got.expect_err(name);
+        assert!(got.contains(message), "{name}: {got}");
+    }
+    // An appearance is optional.
+    assert_eq!(
+        widget_grammar(
+            &f,
+            &append_widget(
+                &lta,
+                &Widget {
+                    ap: false,
+                    ..Widget::valid()
+                }
+            )
+        ),
+        Ok(())
+    );
+    // The valid control still passes (the cases differ from it by one fragment each).
+    assert_eq!(
+        widget_grammar(&f, &append_widget(&lta, &Widget::valid())),
+        Ok(())
+    );
+}
+/// Restating the DSS in a later update (new DSS dictionary, same or refreshed
+/// evidence) is accepted; dropping an existing signature's VRI entry is not.
+#[test]
+fn dss_restatement_keeps_vri_entries() {
+    let f = Fixture::new();
+    let lta = widget_lta(&f);
+    let doc = lopdf::Document::load_mem(&lta).unwrap();
+    let root = doc.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let mut catalog = doc.get_object(root).unwrap().as_dict().unwrap().clone();
+    let dss_id = catalog.get(b"DSS").unwrap().as_reference().unwrap();
+    let dss = doc.get_object(dss_id).unwrap().as_dict().unwrap().clone();
+    assert!(dss.has(b"VRI"));
+    let fresh = doc.max_id + 1;
+    catalog.set("DSS", lopdf::Object::Reference((fresh, 0)));
+    let restate = |dss: lopdf::Dictionary| {
+        append_objects(
+            &lta,
+            vec![
+                ((fresh, 0), lopdf::Object::Dictionary(dss)),
+                (root, lopdf::Object::Dictionary(catalog.clone())),
+            ],
+        )
+    };
+    assert_eq!(widget_grammar(&f, &restate(dss.clone())), Ok(()));
+    let mut without = dss.clone();
+    without.remove(b"VRI");
+    assert_eq!(
+        widget_grammar(&f, &restate(without)),
+        Err("existing VRI entry removed".to_string())
+    );
+}
+struct NoNetwork;
+impl oncl_pki::http::HttpTransport for NoNetwork {
+    fn send(
+        &self,
+        _: &oncl_pki::http::HttpRequest<'_>,
+    ) -> Result<oncl_pki::http::HttpReply, oncl_pki::http::HttpError> {
+        panic!("offline PDF verification attempted network access")
+    }
+}
+fn generic(f: &Fixture, bytes: &[u8]) -> Result<oncl_pdf::PdfVerification, oncl_pdf::PdfError> {
+    let temp = tempfile::tempdir().unwrap();
+    let store = TemporaryStore::new(temp.path()).unwrap();
+    oncl_pdf::verify_source(
+        Source::sequential(&mut Cursor::new(bytes), None),
+        &PdfLimits::default(),
+        &store,
+        &ValidationContext {
+            policy: ValidationPolicy::OfflineReport,
+            now: NOW,
+            anchors: &f.anchors,
+            intermediates: &[],
+            http: &NoNetwork,
+        },
+        &[SigAlg::RsaSha256],
+        &mut scope(),
+    )
+}
+/// The generic profile reports signers: a `DocTimeStamp` is not one (no refusal, no
+/// signer row), but a signature dictionary merely typed `DocTimeStamp` is refused.
+#[test]
+fn generic_profile_skips_a_document_timestamp_but_not_a_disguised_signature() {
+    let f = Fixture::new();
+    let lta = widget_lta(&f);
+    let verified = generic(&f, &lta).expect("a document timestamp is not a refusal");
+    let (aggregate, facts) = verified.into_aggregate(&scope()).unwrap();
+    assert_eq!(aggregate.signers.len(), 1, "only the signature is a signer");
+    assert_eq!(facts.signatures.len(), 1);
+    // The appended widget form is skipped the same way.
+    let widget = append_widget(&lta, &Widget::valid());
+    assert!(generic(&f, &widget).is_ok());
+    // A CMS signature disguised with /Type /DocTimeStamp is not a timestamp.
+    let disguised = append_widget(
+        &lta,
+        &Widget {
+            sub_filter: "/ETSI.CAdES.detached",
+            ..Widget::valid()
+        },
+    );
+    assert!(matches!(
+        generic(&f, &disguised),
+        Err(oncl_pdf::PdfError::Malformed("signature dictionary type"))
+    ));
+    // A timestamp subfilter under /Type /Sig is refused, not skipped.
+    let sig_typed = append_widget(
+        &lta,
+        &Widget {
+            value_type: "/Sig",
+            ..Widget::valid()
+        },
+    );
+    assert!(generic(&f, &sig_typed).is_err());
+}

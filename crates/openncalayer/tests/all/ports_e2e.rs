@@ -1,0 +1,210 @@
+//! Plugin ports in the daemon, through the `openncalayer` binary (feature `e2e-prompter`)
+//! and the browser extension bridge: a port installed in the data directory answers the
+//! page with the core's windows answered by a script.
+
+use oncl_ipc::{IpcStream, connect, endpoint, read_frame, write_frame};
+use oncl_plugin::{Package, Source, Store};
+use oncl_testkit::ports::DaemonPort;
+use serde_json::{Value, json};
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+use tokio::time::timeout;
+
+const PATIENCE: Duration = Duration::from_secs(120);
+
+struct Client(IpcStream);
+
+impl Client {
+    async fn send(&mut self, frame: Value) {
+        write_frame(&mut self.0, frame.to_string().as_bytes())
+            .await
+            .unwrap();
+    }
+
+    async fn next(&mut self) -> Value {
+        let frame = timeout(PATIENCE, read_frame(&mut self.0))
+            .await
+            .expect("no frame in time")
+            .unwrap()
+            .expect("connection closed");
+        serde_json::from_slice(&frame).unwrap()
+    }
+
+    async fn open(&mut self, sid: u32, origin: &str) {
+        self.send(json!({"t": "open", "sid": sid, "origin": origin}))
+            .await;
+        assert_eq!(self.next().await, json!({"t": "open", "sid": sid}));
+        // The greeting.
+        assert_eq!(self.next().await["t"], "msg");
+    }
+
+    async fn call(&mut self, sid: u32, request: Value) -> Value {
+        self.send(json!({"t": "msg", "sid": sid, "data": request.to_string()}))
+            .await;
+        let frame = self.next().await;
+        assert_eq!(frame["t"], "msg", "{frame}");
+        assert_eq!(frame["sid"], sid, "{frame}");
+        serde_json::from_str(frame["data"].as_str().unwrap()).unwrap()
+    }
+}
+
+/// A daemon, killed on drop; it keeps its port leased until then.
+struct Daemon(
+    Child,
+    #[expect(dead_code, reason = "held only to keep the port leased")] DaemonPort,
+);
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The port `short` of `plugins/`, packaged and installed into `data`.
+fn install_port(data: &Path, short: &str) {
+    let manifest = oncl_testkit::read(
+        oncl_testkit::plugin::ports_dir()
+            .join(short)
+            .join("plugin.toml"),
+    );
+    let wasm = oncl_testkit::read(oncl_testkit::plugin::port_wasm(short));
+    let bytes = oncl_plugin::archive(&manifest, &wasm).unwrap();
+    Store::open(data)
+        .unwrap()
+        .install(&Package::read(&bytes).unwrap(), &bytes, Source::Local, None)
+        .unwrap();
+}
+
+/// The daemon of the data directory `data`, its windows answered by `steps` (the
+/// `ONCL_E2E_PROMPTER` file).
+fn daemon(data: &Path, steps: &str) -> Daemon {
+    std::fs::write(data.join("steps.json"), steps).unwrap();
+    let port = DaemonPort::lease();
+    let child = Command::new(env!("CARGO_BIN_EXE_openncalayer"))
+        .args(["run", "--allow-no-wss", "--no-tray"])
+        .env("ONCL_DATA_DIR", data)
+        .env("NCALAYERPORT", port.port().to_string())
+        .env("ONCL_E2E_PROMPTER", data.join("steps.json"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    Daemon(child, port)
+}
+
+/// The bridge client of `daemon`, once its bridge is up.
+async fn client(data: &Path, daemon: &mut Daemon) -> Client {
+    let ep = endpoint(data).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        assert!(daemon.0.try_wait().unwrap().is_none(), "the daemon exited");
+        if let Ok(stream) = connect(&ep).await {
+            let mut c = Client(stream);
+            assert_eq!(c.next().await["t"], "hello");
+            return c;
+        }
+        assert!(Instant::now() < deadline, "the bridge never came up");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// `signXmlApi` of the uchet port: a key file the page names opens once the user allows
+/// it, once for each socket (each its own session).
+#[test]
+fn uchet_page_path_consent_e2e() {
+    let dir = tempfile::tempdir().unwrap();
+    install_port(dir.path(), "uchet");
+    // Two consents: the first socket's, then the second's; a third question would find
+    // no step and be answered no.
+    let mut daemon = daemon(
+        dir.path(),
+        r#"[{"confirm": {"yes": true}}, {"confirm": {"yes": true}}]"#,
+    );
+    let key = oncl_testkit::synthetic("user-gost2015-sign");
+    runtime().block_on(async {
+        let mut c = client(dir.path(), &mut daemon).await;
+        let request = json!({
+            "module": "kz.uchet.signUtil.commonUtils",
+            "method": "signXmlApi",
+            "args": [key.path.to_str().unwrap(), key.password, "<doc>1</doc>"],
+        });
+        let signed = |reply: &Value| {
+            assert_eq!(reply["code"], "200", "{reply}");
+            let xml = reply["message"].as_str().unwrap();
+            assert!(xml.contains("SignatureValue"), "{xml}");
+        };
+        c.open(1, "https://uchet.kz").await;
+        signed(&c.call(1, request.clone()).await);
+        // The same session: no question.
+        signed(&c.call(1, request.clone()).await);
+        // A new socket asks again.
+        c.open(2, "https://uchet.kz").await;
+        signed(&c.call(2, request.clone()).await);
+        // Both steps are spent: one more question would be answered no.
+        c.open(3, "https://uchet.kz").await;
+        assert_eq!(
+            c.call(3, request).await,
+            json!({"code": "500", "message": "Не удалось открыть хранилище"})
+        );
+    });
+}
+
+/// A port's error message and its retry choice are answered by the script's `message`
+/// and `choice` steps, in turn with the key windows around them.
+#[test]
+fn port_message_and_choice_windows_e2e() {
+    let dir = tempfile::tempdir().unwrap();
+    install_port(dir.path(), "nursign");
+    install_port(dir.path(), "market");
+    let key = oncl_testkit::synthetic("user-gost2015-sign");
+    let storage = json!({"storage": {"path": key.path, "password": key.password}});
+    let steps = json!([
+        // NURSign: a request it cannot read shows its error first.
+        {"message": null},
+        // MarketSign without a document: the key, then «Закрыть» (retry), the key again,
+        // then «Отменить».
+        storage, {"key": 0}, {"choice": {"button": 0}},
+        storage, {"key": 0}, {"choice": {"button": 1, "option": null}},
+        // NURSign signs after both windows.
+        storage, {"key": 0},
+    ]);
+    let mut daemon = daemon(dir.path(), &steps.to_string());
+    runtime().block_on(async {
+        let mut c = client(dir.path(), &mut daemon).await;
+        c.open(1, "https://portal.gov.kz").await;
+        assert_eq!(
+            c.call(
+                1,
+                json!({"module": "NURSign", "type": "multitext", "data": "x"})
+            )
+            .await,
+            json!({"errorMessage": "Ошибка при формировании ЭЦП", "errorCode": "500"})
+        );
+        assert_eq!(
+            c.call(1, json!({"module": "MarketSign", "type": "xml"}))
+                .await,
+            json!({"errorCode": "CANCEL"})
+        );
+        let reply = c
+            .call(
+                1,
+                json!({"module": "NURSign", "type": "xml", "data": "<a/>"}),
+            )
+            .await;
+        assert_eq!(reply["errorCode"], "NONE", "{reply}");
+        assert!(
+            reply["result"].as_str().unwrap().contains("SignatureValue"),
+            "{reply}"
+        );
+    });
+}

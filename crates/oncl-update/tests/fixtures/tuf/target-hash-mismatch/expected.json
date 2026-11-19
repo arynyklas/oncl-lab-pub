@@ -1,0 +1,18 @@
+{
+  "name": "target-hash-mismatch",
+  "attack": "the stable index target has the same length, other content (sha256 differs)",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "target",
+  "error_class": "Target hash mismatch (LengthOrHashMismatchError)",
+  "changed_files_vs_valid": [
+    "targets/indexes/4d6db83f027ece1d378930dbe36b31f01250194905a562d75d14fdb982e41dff.stable.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "target",
+    "error": "LengthOrHashMismatchError: Observed hash 4a56f33fb2d87498a65a788274c601ee64e1717bab0f24c0ad160dd7f3a4c56a does not match expected hash 4d6db83f027ece1",
+    "diverges_from_contract": false
+  }
+}

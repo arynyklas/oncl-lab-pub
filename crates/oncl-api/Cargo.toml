@@ -1,0 +1,46 @@
+[package]
+name = "oncl-api"
+description = "OpenNCALayer HTTP DTOs, optional server transport and optional streaming client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# Streaming HTTP client of the typed contract: ureq (rustls) only, never Tokio/axum/hyper.
+client = ["dep:ureq", "dep:serde_json", "dep:zeroize", "dep:getrandom"]
+server = ["dep:axum", "dep:multer", "dep:futures-util", "dep:serde_json"]
+
+[dependencies]
+serde.workspace = true
+axum = { workspace = true, optional = true }
+multer = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Enables the optional client in this package's own tests.
+oncl-api = { path = ".", features = ["client", "server"] }
+tokio = { workspace = true, features = ["macros"] }
+oncl-server = { path = "../oncl-server", features = ["test-support"] }
+tempfile.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
+oncl-pki = { workspace = true, features = ["testing"] }
+der.workspace = true
+time.workspace = true
+oncl-testkit.workspace = true
+hyper = { version = "=1.12.0", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio"] }
+http-body-util = { version = "=0.1.5", default-features = false }
+mime = "=0.3.17"
+oncl-token = { workspace = true, features = ["emulator"] }
+oncl-pdk.workspace = true
+oncl-pdf.workspace = true
+wat.workspace = true

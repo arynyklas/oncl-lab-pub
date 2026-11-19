@@ -1,0 +1,43 @@
+{
+ "signatures": [
+  {
+   "keyid": "5d7f9b92a07febc3f3740f556219d58b3d0410c89719ddff4a2dd19232cfc146",
+   "sig": "94c0caf6740200db5719fb735ac84eb7f115dbad3f53ffb65fa172905aa4abad237a6d43d4637b3532158e860104ba13fb7882d48b201316aba950ff3df27c08"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2026-12-15T00:00:00Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "plugins/beta/kz.beta.tool/2.1.0.onclp": {
+    "custom": {
+     "oncl": {
+      "capabilities": {},
+      "channel": "stable",
+      "id": "kz.beta.tool",
+      "min_core": "0.1.2",
+      "modules": [
+       "kz.beta.Module"
+      ],
+      "name": {
+       "en": "kz.beta.tool",
+       "kk": "kz.beta.tool",
+       "ru": "kz.beta.tool"
+      },
+      "revoked": false,
+      "rollout": 100,
+      "schema": 1,
+      "url": "https://downloads.example.invalid/kz.beta.tool-2.1.0.onclp",
+      "version": "2.1.0"
+     }
+    },
+    "hashes": {
+     "sha256": "9df9df1221a0f408b7c4392606d8b84e679dc85fc4ce2bb15b743882fbb43350"
+    },
+    "length": 37
+   }
+  },
+  "version": 1
+ }
+}

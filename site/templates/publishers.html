@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{#- The publishers: every one of `publishers/`, the revoked ones marked. -#}
+{% block main %}
+<h1>{{ section.title }}</h1>
+<p class="lead">{{ trans(key="publishers_lead", lang=lang) }}</p>
+{%- if data.publishers.order[lang] %}
+<div class="table" role="region" aria-labelledby="publishers-caption" tabindex="0">
+<table class="publishers">
+<caption id="publishers-caption">{{ trans(key="publishers_caption", lang=lang) }}</caption>
+<thead><tr>
+<th scope="col">{{ trans(key="col_publisher", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_prefix", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_status", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_plugins", lang=lang) }}</th>
+</tr></thead>
+<tbody>
+{%- for name in data.publishers.order[lang] %}
+{%- set publisher = data.publishers.list[name] %}
+<tr id="pub-{{ publisher.name }}">
+<th scope="row"><a href="{{ get_url(path='@/publishers/' ~ publisher.name ~ '.md', lang=lang) }}">{{ publisher.display[lang] }}</a></th>
+<td><code>{{ publisher.id_prefix }}</code></td>
+<td>{% include "parts/publisher_state.html" %}</td>
+<td>{% for id in publisher.plugins %}{{ data.publishers.plugins[id].name[lang] }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- else %}
+<p class="nodata">{{ trans(key="publishers_none", lang=lang) }}</p>
+{%- endif %}
+{% endblock main %}

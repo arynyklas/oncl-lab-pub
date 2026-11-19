@@ -1,0 +1,31 @@
+{
+  "name": "delegated-key-reuse",
+  "attack": "pub-beta is delegated to (and signed by) the top-level targets key",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": null,
+  "probes": [
+    "plugins/alpha/kz.alpha.signer/1.0.0.onclp",
+    "plugins/beta/kz.beta.tool/2.1.0.onclp"
+  ],
+  "contract": {
+    "refresh": "accepted",
+    "roles": {
+      "pub-alpha": "verified",
+      "pub-beta": "refused: key reused"
+    }
+  },
+  "changed_files_vs_delegated_valid": [
+    "metadata/1.pub-beta.json",
+    "metadata/1.snapshot.json",
+    "metadata/1.targets.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "refresh": "ok",
+    "targets": {
+      "plugins/alpha/kz.alpha.signer/1.0.0.onclp": "found",
+      "plugins/beta/kz.beta.tool/2.1.0.onclp": "found"
+    }
+  }
+}

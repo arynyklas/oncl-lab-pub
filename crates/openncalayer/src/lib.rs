@@ -1,0 +1,39 @@
+//! The OpenNCALayer daemon: an NCALayer-compatible WebSocket server on
+//! `wss://127.0.0.1:13579` (plus a self-test page over HTTPS on the same port) that can start
+//! later in the running daemon, the bridge to the browser extension over local IPC, the
+//! registration of its native messaging host, what installing, updating and uninstalling
+//! change on the user's desktop, its data directory and settings, what its settings window
+//! and TLS wizard work with, the certificate's renewal and what the tray tells the user, its
+//! self-update, logging and the command line.
+
+mod bridge;
+pub mod builtins;
+pub mod cli;
+pub mod desktop;
+mod http;
+pub mod lifecycle;
+mod logging;
+pub mod maintenance;
+pub mod nm;
+pub mod notices;
+mod paths;
+pub mod plugins;
+pub mod renewal;
+pub mod repository;
+mod server;
+mod session;
+mod settings;
+pub mod update;
+pub mod wss;
+
+pub use bridge::{NM_FRAME_LIMIT, WorkspaceOpener, serve_ipc, split_message};
+pub use paths::Paths;
+pub use server::{
+    DEFAULT_PORT, IDLE_TIMEOUT, LiveTls, MAX_MESSAGE, MAX_PORT, NoPlugins, PORT_VAR, Plugins,
+    ServerConfig, about_bundles, build_registry, build_registry_from, builtin_modules, listen_port,
+    listen_port_from, serve,
+};
+pub use session::{
+    activity, hold_requests, hold_requests_unless, release_requests, requests_held, requests_idle,
+};
+pub use settings::{JsonSettings, LiveProxyTransport, daemon_transport, load_settings};

@@ -1,0 +1,47 @@
+[package]
+name = "oncl-port-tests"
+description = "Tests of OpenNCALayer's plugin ports (plugins/): the ports built for wasm32 and run in the plugin runtime with scripted dialogs and mock PKI services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `ScriptedPrompter`, `MemoryRecentPath`: the dialogs of a port, answered by a script.
+oncl-flows = { workspace = true, features = ["testing"] }
+oncl-pdk.workspace = true
+# `MockTsa`, `MockOcsp`, `MockCrl`, `RouteTransport`: the PKI services ports reach.
+oncl-pki = { workspace = true, features = ["testing"] }
+oncl-plugin = { workspace = true, features = ["distribution"] }
+oncl-protocol.workspace = true
+# The ports' workspace built once per process, the synthetic key stores.
+oncl-testkit.workspace = true
+# The ports' hardware tokens: off, or the emulator's cards (`Harness::with_tokens`).
+oncl-token = { workspace = true, features = ["emulator"] }
+semver.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+oncl-xml.workspace = true
+# DER of the synthetic certificates and of the CMS (base64) the ports' replies carry; SKF's
+# OCSP issuer: an intermediate CA issued again with one of the serials SKF accepts.
+base64.workspace = true
+der.workspace = true
+# The Documentolog server of the tests: AES-CBC of its fields, RSA-PKCS#1 v1.5 of its
+# challenge with a test key.
+aes.workspace = true
+cbc.workspace = true
+rsa.workspace = true
+# Qoltanba's report: the PDFs of the tests, read back independently of the port.
+lopdf.workspace = true
+# SKF's CA list: a JKS of the tests, its integrity hash.
+sha1.workspace = true
+serde_json.workspace = true
+# The archives K2Sign uploads, read back.
+zip.workspace = true
+# Streebog of the archive time-stamp's imprint, computed independently of the port.
+oncl-gost.workspace = true
+tempfile.workspace = true
+x509-cert.workspace = true

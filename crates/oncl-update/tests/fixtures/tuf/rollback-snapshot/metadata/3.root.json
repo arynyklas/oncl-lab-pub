@@ -1,0 +1,75 @@
+{
+ "signatures": [
+  {
+   "keyid": "ef44ca6055ac74925e4155dca516c99a2e0d1dc526a4e38d056df766f91b9282",
+   "sig": "5d0e0d419a4ab5dcd0f777fd6186d5677473920161b8412c5903ecec2ad0b0f7ac96fa92e88bf2abfba93b517c5b23f84ce05811353d3b52abf4cf237fdc0302"
+  },
+  {
+   "keyid": "905761cda5822d2c1e11928375afcf8f86ac7603e071dee14340b5734fae9795",
+   "sig": "4b760ed0d15d32add1bfd7cd6c826d9b5ccec9f6e6499c67642cde9a44b082106bf5ce62ca8a0778603152654a7442cc550c63e82e47b32299d406b523d4b20e"
+  }
+ ],
+ "signed": {
+  "_type": "root",
+  "consistent_snapshot": true,
+  "expires": "2027-11-15T00:00:00Z",
+  "keys": {
+   "5d7f9b92a07febc3f3740f556219d58b3d0410c89719ddff4a2dd19232cfc146": {
+    "keytype": "ed25519",
+    "keyval": {
+     "public": "be43908bc8de609a04c1cb68cf8809d7f4642e98d8d356f9f5020fc3839d15e2"
+    },
+    "scheme": "ed25519"
+   },
+   "905761cda5822d2c1e11928375afcf8f86ac7603e071dee14340b5734fae9795": {
+    "keytype": "ed25519",
+    "keyval": {
+     "public": "a9db5955c93adecf4ff734a66a9e58b90e4dddb5182a719945678a6d8aa9b342"
+    },
+    "scheme": "ed25519"
+   },
+   "9acc66b6286cb1bec6c965d216eba52e4267632df8889973701de2d5da499964": {
+    "keytype": "ed25519",
+    "keyval": {
+     "public": "44efef77e0d8001f6c221b981bd0e571d8a8f9a8f523ef85390aadd8e4acc142"
+    },
+    "scheme": "ed25519"
+   },
+   "e837e8b183c59a2b7ebcd3173500127f0c1ef57d5d590e0673c8190dd9536976": {
+    "keytype": "ed25519",
+    "keyval": {
+     "public": "725ac05cd1ff31946a7cb443e0838a9d34d19e08d61b78ea90ceefe480b8daf9"
+    },
+    "scheme": "ed25519"
+   }
+  },
+  "roles": {
+   "root": {
+    "keyids": [
+     "905761cda5822d2c1e11928375afcf8f86ac7603e071dee14340b5734fae9795"
+    ],
+    "threshold": 1
+   },
+   "snapshot": {
+    "keyids": [
+     "9acc66b6286cb1bec6c965d216eba52e4267632df8889973701de2d5da499964"
+    ],
+    "threshold": 1
+   },
+   "targets": {
+    "keyids": [
+     "5d7f9b92a07febc3f3740f556219d58b3d0410c89719ddff4a2dd19232cfc146"
+    ],
+    "threshold": 1
+   },
+   "timestamp": {
+    "keyids": [
+     "e837e8b183c59a2b7ebcd3173500127f0c1ef57d5d590e0673c8190dd9536976"
+    ],
+    "threshold": 1
+   }
+  },
+  "spec_version": "1.0.31",
+  "version": 3
+ }
+}

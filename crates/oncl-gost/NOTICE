@@ -1,0 +1,21 @@
+OpenNCALayer SDK
+Copyright 2026 Aryn Yklas
+
+This package is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+OpenNCALayer is an independent reimplementation of the NCALayer protocol and of the
+operations behind it. It is not affiliated with or endorsed by the National Certification
+Authority of the Republic of Kazakhstan. "NCALayer" and "Kalkan" are used only to describe
+compatibility.
+
+src/streebog_secret.rs and src/streebog_secret/consts.rs are derived from the RustCrypto
+`streebog` 0.11.0 crate (https://github.com/RustCrypto/hashes, commit
+b5051e5a5e7dc86a6c27c1ec7a390744ebcfb97a), Copyright (c) 2016-2026 The RustCrypto Project
+Developers and Copyright (c) 2016 Artyom Pavlov, distributed under the MIT or Apache-2.0
+licenses and used here under Apache-2.0. consts.rs is a verbatim copy. streebog_secret.rs is
+modified for secret input: constant-time selection of the LPS table words (the `subtle`
+crate), compression temporaries in one workspace wiped after every block, the state in one
+heap allocation made before any input and wiped as soon as the digest is written. It was
+first kept in a fork (https://github.com/arynyklas/hashes, branch
+`openncalayer/streebog-0.11.0`). src/secret_hmac.rs is our own RFC 2104 HMAC over it. Public
+document hashing uses the unmodified crates.io `streebog`.
