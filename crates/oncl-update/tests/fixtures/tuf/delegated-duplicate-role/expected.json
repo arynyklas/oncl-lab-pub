@@ -1,0 +1,25 @@
+{
+  "name": "delegated-duplicate-role",
+  "attack": "the top-level targets delegate to pub-beta twice",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": null,
+  "probes": [
+    "plugins/alpha/kz.alpha.signer/1.0.0.onclp",
+    "plugins/beta/kz.beta.tool/2.1.0.onclp"
+  ],
+  "contract": {
+    "refresh": "refused at the targets: a role listed twice",
+    "roles": {}
+  },
+  "changed_files_vs_delegated_valid": [
+    "metadata/1.snapshot.json",
+    "metadata/1.targets.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "refresh": "DeserializationError",
+    "error": "Failed to deserialize JSON (ValueError: Duplicate role pub-beta)",
+    "targets": {}
+  }
+}

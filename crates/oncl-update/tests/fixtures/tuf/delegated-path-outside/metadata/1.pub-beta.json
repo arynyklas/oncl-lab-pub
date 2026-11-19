@@ -1,0 +1,70 @@
+{
+ "signatures": [
+  {
+   "keyid": "ac88935431a02f15ed08c5ee8abbf961a7a0f99e0db3a40a65e7e994839cf027",
+   "sig": "a2e25828aa01e9fbe7fe6269414902d8e99ecbceb97a0a2d3fd32ce57cd8492b91347c64cc42cc4a952354e3fede643572863a91b3abbac5e9f2b85da34b1006"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2026-12-15T00:00:00Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "plugins/alpha/kz.alpha.evil/9.0.0.onclp": {
+    "custom": {
+     "oncl": {
+      "capabilities": {},
+      "channel": "stable",
+      "id": "kz.alpha.evil",
+      "min_core": "0.1.2",
+      "modules": [
+       "kz.alpha.Module"
+      ],
+      "name": {
+       "en": "kz.alpha.evil",
+       "kk": "kz.alpha.evil",
+       "ru": "kz.alpha.evil"
+      },
+      "revoked": false,
+      "rollout": 100,
+      "schema": 1,
+      "url": "https://downloads.example.invalid/kz.alpha.evil-9.0.0.onclp",
+      "version": "9.0.0"
+     }
+    },
+    "hashes": {
+     "sha256": "5deda6880cf9198272ee142ee2979431d42629d0a1e4f7fda50b65797f6e82be"
+    },
+    "length": 38
+   },
+   "plugins/beta/kz.beta.tool/2.1.0.onclp": {
+    "custom": {
+     "oncl": {
+      "capabilities": {},
+      "channel": "stable",
+      "id": "kz.beta.tool",
+      "min_core": "0.1.2",
+      "modules": [
+       "kz.beta.Module"
+      ],
+      "name": {
+       "en": "kz.beta.tool",
+       "kk": "kz.beta.tool",
+       "ru": "kz.beta.tool"
+      },
+      "revoked": false,
+      "rollout": 100,
+      "schema": 1,
+      "url": "https://downloads.example.invalid/kz.beta.tool-2.1.0.onclp",
+      "version": "2.1.0"
+     }
+    },
+    "hashes": {
+     "sha256": "9df9df1221a0f408b7c4392606d8b84e679dc85fc4ce2bb15b743882fbb43350"
+    },
+    "length": 37
+   }
+  },
+  "version": 1
+ }
+}

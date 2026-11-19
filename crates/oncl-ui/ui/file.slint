@@ -1,0 +1,66 @@
+// The file chooser's own window: who asks, and the system file dialog on top of it.
+
+import { Button } from "std-widgets.slint";
+import { ActionBar, DialogScroll, EscapeScope, Metrics, NameText, Subheading } from "common.slint";
+
+export component FileDialog inherits Window {
+    title: "OpenNCALayer";
+    always-on-top: true;
+    min-width: Metrics.dialog-min-width;
+    min-height: Metrics.min-height;
+    forward-focus: browse-button;
+
+    // The requesting page's origin.
+    in property <string> origin;
+    // Who asks besides the page (a plugin's name); empty: the page itself.
+    in property <string> source;
+    // What to choose: a file or a folder.
+    in property <string> heading;
+    // The translated line naming who asks; empty without a source.
+    out property <string> source-line: root.source == "" ? "" : @tr("Plugin: {}", root.source);
+    // The buttons are inside the window, whatever the text and the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    callback browse();
+    callback cancel();
+
+    EscapeScope {
+        escape => {
+            root.cancel();
+        }
+        VerticalLayout {
+            padding: Metrics.pad;
+            spacing: Metrics.gap;
+            DialogScroll {
+                NameText {
+                    text: @tr("Request from: {}", root.origin);
+                }
+
+                if root.source != "": NameText {
+                    text: root.source-line;
+                }
+
+                Subheading {
+                    text: root.heading;
+                }
+            }
+
+            actions := ActionBar {
+                browse-button := Button {
+                    text: @tr("Browse…");
+                    primary: true;
+                    clicked => {
+                        root.browse();
+                    }
+                }
+
+                Button {
+                    text: @tr("Cancel");
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+            }
+        }
+    }
+}

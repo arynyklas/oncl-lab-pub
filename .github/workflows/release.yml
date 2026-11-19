@@ -1,0 +1,944 @@
+name: Release
+
+# A `v*` tag publishes a GitHub release: the daemon and the relay for Windows (x64, x86, and
+# Windows 7 x64/x86 with their app-local DLLs), Linux and macOS as archives, as installers
+# (`Setup.exe` per Windows flavor, the macOS `.pkg` and `.zip`, the Linux AppImage) and as
+# Velopack update packages (the update index points at those), the browser extension, a
+# CycloneDX SBOM, the pacman package for Arch Linux and SHA256SUMS, every file with a build
+# provenance attestation. A tag with a pre-release suffix (`v0.1.0-alpha.1`) makes a
+# pre-release; every release is created as a draft. The installers and packages
+# are made by `cargo xtask package` (roadmap P8), the same commands CI runs.
+# The standalone `oncl` and `oncl-server` packages (`cargo xtask package platform`) are built
+# by the `platform` jobs as workflow artifacts (`platform-*`), outside this release: no job
+# of this file publishes them, signs them or uploads them to a registry or a browser store.
+# Then a pull request adds the version to the update indexes (`updates/v1/<channel>.json`:
+# a pre-release to beta, a release to stable and beta): the maintainer signs the TUF targets
+# over them locally (`cargo xtask tuf update`), never CI.
+#
+# Code signing runs only with its secrets, otherwise it is skipped with a notice:
+# Authenticode through SignPath (secret SIGNPATH_API_TOKEN, variables
+# SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG) signs
+# openncalayer.exe and nmhost.exe of the archive and the package, then each `Setup.exe`
+# (the app-local DLLs of the Windows 7 builds stay unsigned); Apple signing and notarization
+# (secrets APPLE_CERTIFICATE_P12 (base64), APPLE_CERTIFICATE_PASSWORD, APPLE_SIGN_IDENTITY,
+# APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD) covers the macOS `.app` of the package, the
+# `.zip` and the `.pkg`; the `.pkg` itself is signed and notarized only with the "Developer
+# ID Installer" identity in APPLE_INSTALL_IDENTITY too. The macOS archive stays unsigned.
+#
+# The Firefox xpi of a release (a tag without a suffix) is signed by addons.mozilla.org as an
+# unlisted add-on (secrets AMO_JWT_ISSUER and AMO_JWT_SECRET; the add-on is only signed,
+# never listed or published on AMO), and the signed file replaces the unsigned one in the
+# release: the `extension` job. A pre-release keeps the unsigned xpi.
+#
+# Third-party actions are pinned to a commit, with the release tag in a comment.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The Velopack CLI of the `velopack` crate in Cargo.lock.
+  VPK_VERSION: 1.3.39-g8d2844f
+  # A test or check whose oracle program is missing fails instead of skipping.
+  ONCL_REQUIRE_ORACLES: "1"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag names the workspace version
+        id: check
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          declared="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ "$version" != "$declared" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml declares $declared"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          case "$version" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # The built-in modules' WebAssembly, built once: every flavor embeds these bytes
+  # (`ONCL_BUILTINS_DIR`), and their checksums are the release's `builtins-SHA256SUMS`.
+  builtins:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain (rust-toolchain.toml, with wasm32-unknown-unknown)
+        run: rustup toolchain install
+      - run: cargo xtask builtins build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: builtins
+          path: target/builtins/
+          if-no-files-found: error
+      - name: The checksums as a release asset
+        run: mkdir -p sums && cp target/builtins/SHA256SUMS sums/builtins-SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-builtins-sums
+          path: sums/builtins-SHA256SUMS
+          if-no-files-found: error
+
+  # One build per Velopack flavor (`oncl_update::Flavor`): the archive, the installer and
+  # the update packages (`cargo xtask package`).
+  binaries:
+    needs: [version, builtins]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows 10 and 11: `Setup.exe` with RID win10-* refuses Windows 7 and 8.
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            flavor: win-x64
+          - os: windows-2025
+            target: i686-pc-windows-msvc
+            flavor: win-x86
+          # Built in the glibc 2.28 container (`cargo xtask package linux-build`): the
+          # archive and the AppImage start on glibc 2.28 and newer.
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            flavor: linux-x64
+          # The `osx` flavor is every Mac's (`Flavor::current`, Intel and Apple silicon):
+          # both architectures, joined by lipo; `cargo xtask package macos` refuses a
+          # program without both slices.
+          - os: macos-15
+            target: universal-apple-darwin
+            flavor: osx
+          # Windows 7 SP1 (roadmap D14): `cargo xtask win7` builds the executables and the
+          # app-local DLLs, checks them against the denylist of imports missing on Windows 7
+          # and starts them; the package's contents, Velopack's own executables included,
+          # and `Setup.exe` (RID win7-*) pass the same gate in `cargo xtask package windows`.
+          - os: windows-2025
+            target: x86_64-win7-windows-msvc
+            win7: x64
+            flavor: win7-x64
+          - os: windows-2025
+            target: i686-win7-windows-msvc
+            win7: x86
+            flavor: win7-x86
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.win7 && 90 || 60 }}
+    # `actions: read` for SignPath: its `github-token` reads the job details and downloads
+    # the unsigned artifact, "Requires the `action:read` and `content:read` permissions"
+    # (docs.signpath.io/trusted-build-systems/github, input `github-token`, action v3).
+    permissions:
+      contents: read
+      actions: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      FLAVOR: ${{ matrix.flavor }}
+      BIN: ${{ matrix.win7 && format('target/win7/{0}', matrix.win7) || matrix.flavor == 'linux-x64' && 'target/linux-x64' || format('target/{0}/release', matrix.target) }}
+      # The archive's name: `openncalayer-<version>-<archive>`.
+      ARCHIVE: ${{ matrix.win7 && format('win7-{0}', matrix.win7) || matrix.target }}
+      # Only whether the signing secrets exist: the secrets reach their signing steps alone.
+      SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_ORGANIZATION_ID != '' && vars.SIGNPATH_PROJECT_SLUG != '' && vars.SIGNPATH_SIGNING_POLICY_SLUG != '' }}
+      APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_APP_PASSWORD != '' }}
+      APPLE_PKG_SIGNING: ${{ secrets.APPLE_INSTALL_IDENTITY != '' }}
+      # The built-in modules of the `builtins` job, embedded as they are.
+      ONCL_BUILTINS_DIR: ${{ github.workspace }}/target/builtins
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: builtins
+          path: target/builtins
+      - name: Install toolchain (rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          if [ -n "${{ matrix.win7 }}" ]; then
+            # The pinned nightly of `cargo xtask win7` (xtask::win7::TOOLCHAIN).
+            rustup toolchain install nightly-2026-08-12 --profile minimal --component rust-src
+          elif [ "${{ matrix.target }}" = universal-apple-darwin ]; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          elif [ "$RUNNER_OS" = Windows ]; then
+            rustup target add "${{ matrix.target }}"
+          fi
+      - name: Build
+        if: runner.os == 'Windows' && !matrix.win7
+        run: cargo build --locked --release --target ${{ matrix.target }} -p openncalayer -p oncl-nmhost
+      - name: Build, check imports, start (Windows 7)
+        if: matrix.win7
+        run: cargo xtask win7 --arch ${{ matrix.win7 }}
+      # The programs and the AppDir, built, checked against glibc 2.28 and started in the
+      # pinned glibc 2.28 container.
+      - name: Build in the glibc 2.28 container (Linux)
+        if: runner.os == 'Linux'
+        run: cargo xtask package linux-build --version "$VERSION"
+      # Both slices, joined; `cargo xtask package macos` refuses a program without both.
+      - name: Build (macOS universal)
+        if: matrix.target == 'universal-apple-darwin'
+        shell: bash
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            cargo build --locked --release --target "$target" -p openncalayer -p oncl-nmhost
+          done
+          mkdir -p "$BIN"
+          for exe in openncalayer nmhost; do
+            lipo -create -output "$BIN/$exe" \
+              "target/x86_64-apple-darwin/release/$exe" "target/aarch64-apple-darwin/release/$exe"
+          done
+      - name: Built-in modules embedded
+        shell: bash
+        run: |
+          exe="$BIN/openncalayer"
+          if [ "$RUNNER_OS" = Windows ]; then exe+=.exe; fi
+          cargo xtask builtins check --bin "$exe"
+
+      # Authenticode before anything is packed: the archive and the package get the signed
+      # binaries.
+      - name: Keep the unsigned binaries for SignPath
+        id: unsigned
+        if: runner.os == 'Windows' && env.SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signpath-unsigned-${{ matrix.flavor }}
+          path: |
+            ${{ env.BIN }}/openncalayer.exe
+            ${{ env.BIN }}/nmhost.exe
+          if-no-files-found: error
+      - name: Sign the Windows binaries (Authenticode, SignPath)
+        if: runner.os == 'Windows' && env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: ${{ env.BIN }}
+      - name: Authenticode skipped
+        if: runner.os == 'Windows' && env.SIGNPATH != 'true'
+        shell: bash
+        run: |
+          echo "::notice::SignPath is not configured (secret SIGNPATH_API_TOKEN, variables SIGNPATH_*): the $FLAVOR binaries are not signed"
+
+      - name: Package
+        shell: bash
+        run: |
+          name="openncalayer-$VERSION-$ARCHIVE"
+          mkdir -p "dist/$name"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "$BIN/openncalayer.exe" "$BIN/nmhost.exe" "dist/$name/"
+            if [ -n "${{ matrix.win7 }}" ]; then
+              cp "$BIN/combase.dll" "$BIN/api-ms-win-core-winrt-error-l1-1-0.dll" "dist/$name/"
+            fi
+          else
+            cp "$BIN/openncalayer" "$BIN/nmhost" "dist/$name/"
+          fi
+          cp README.md LICENSE NOTICE "dist/$name/"
+          cd dist
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries-${{ matrix.flavor }}
+          path: dist/*
+          if-no-files-found: error
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.427
+      - name: Install the Velopack CLI
+        shell: bash
+        run: |
+          dotnet tool install --tool-path "$RUNNER_TEMP/vpk" vpk --version "$VPK_VERSION"
+          echo "$RUNNER_TEMP/vpk" >> "$GITHUB_PATH"
+      # The full package the delta is made from: of the release with the highest version
+      # below this one that has the flavor's full package, among releases for a release and
+      # among releases and pre-releases for a pre-release. It comes straight from that
+      # release (`vpk download github` reads only the newest 10 releases) and must match the
+      # release's SHA256SUMS. `vpk pack` takes the delta's base from the packages in its
+      # output directory and writes the feed `releases.<flavor>.json` from them, so no older
+      # feed is needed. Only when no such release exists is there no delta; any other
+      # failure fails the job.
+      - name: Download the previous package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[]
+            | select(.draft | not)
+            | select(env.PRERELEASE == "true" or (.prerelease | not))
+            | select(.tag_name | startswith("v"))
+            | select(IN(.assets[].name; "OpenNCALayer-\(.tag_name[1:])-\(env.FLAVOR)-full.nupkg"))
+            | .tag_name' \
+            | jq -Rnr --arg current "$GITHUB_REF_NAME" '
+              # `v<semver>` as a key in semver order: the numbers, then a pre-release before
+              # its release, numeric identifiers before others (jq orders numbers first).
+              def key: ltrimstr("v") | split("+")[0] | index("-") as $i
+                | if $i == null then [(split(".") | map(tonumber)), [1]]
+                  else [(.[:$i] | split(".") | map(tonumber)),
+                    [0, (.[$i + 1:] | split(".") | map(tonumber? // .))]]
+                  end;
+              [inputs | select(key < ($current | key))] | max_by(key) // empty')"
+          if [ -z "$previous" ]; then
+            echo "::notice::no earlier release has a $FLAVOR package: no delta"
+            exit 0
+          fi
+          package="OpenNCALayer-${previous#v}-$FLAVOR-full.nupkg"
+          mkdir -p packages previous
+          gh release download "$previous" --repo "$GITHUB_REPOSITORY" --dir previous \
+            --pattern "$package" --pattern SHA256SUMS
+          expected="$(awk -v name="$package" '$2 == name { print $1 }' previous/SHA256SUMS)"
+          if command -v sha256sum > /dev/null; then
+            actual="$(sha256sum < "previous/$package" | cut -d ' ' -f 1)"
+          else
+            actual="$(shasum -a 256 < "previous/$package" | cut -d ' ' -f 1)"
+          fi
+          if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
+            echo "::error::$package of $previous does not match its SHA256SUMS (${expected:-no entry}, got $actual)"
+            exit 1
+          fi
+          mv "previous/$package" packages/
+          echo "the $FLAVOR delta is made from $package of $previous"
+      - name: Apple signing keychain and notary profile
+        if: runner.os == 'macOS' && env.APPLE_SIGNING == 'true'
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign -T /usr/bin/productbuild
+          rm "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          xcrun notarytool store-credentials openncalayer --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+          # `vpk pack` reads these: it signs the app bundle and notarizes it; `cargo xtask
+          # package macos` takes the keychain and the profile for the .pkg.
+          {
+            echo "VPK_KEYCHAIN=$keychain"
+            echo "VPK_NOTARY_PROFILE=openncalayer"
+            echo "VPK_SIGN_APP_IDENTITY=$APPLE_SIGN_IDENTITY"
+          } >> "$GITHUB_ENV"
+      - name: Apple notarization skipped
+        if: runner.os == 'macOS' && env.APPLE_SIGNING != 'true'
+        run: |
+          echo "::notice::Apple signing is not configured (secrets APPLE_*): the $FLAVOR .app, .zip and .pkg are not signed or notarized"
+      # vpk makes the AppImage's file system with mksquashfs.
+      - name: Install squashfs-tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y squashfs-tools
+      # The installer and the update packages (`cargo xtask package`): this version's
+      # packages, the flavor's feed (`cargo xtask index add` reads the delta's base version
+      # from it) and the installers go to `packaged/`, not the downloaded previous package.
+      - name: Installer and update packages
+        shell: bash
+        env:
+          # Only the macOS run sees it.
+          APPLE_INSTALL_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_INSTALL_IDENTITY || '' }}
+        run: |
+          common=(--version "$VERSION" --packages packages --dist packaged)
+          case "$RUNNER_OS" in
+            Windows)
+              cargo xtask package windows --flavor "$FLAVOR" --bin "$BIN" "${common[@]}"
+              ;;
+            Linux)
+              cargo xtask package linux --appdir "$BIN/OpenNCALayer.AppDir" "${common[@]}"
+              ;;
+            macOS)
+              signing=()
+              if [ "$APPLE_SIGNING" = true ] && [ "$APPLE_PKG_SIGNING" = true ]; then
+                signing=(--install-identity "$APPLE_INSTALL_IDENTITY" --keychain "$VPK_KEYCHAIN" \
+                  --notary-profile "$VPK_NOTARY_PROFILE")
+              else
+                echo "::notice::the .pkg is not signed or notarized: it needs the secret APPLE_INSTALL_IDENTITY besides the Apple signing secrets"
+              fi
+              cargo xtask package macos --bin "$BIN" "${common[@]}" "${signing[@]}"
+              ;;
+          esac
+          ls -l packaged
+      # Authenticode of each Setup.exe after vpk made it, as vpk's own signing would.
+      - name: Keep the unsigned installer for SignPath
+        id: unsigned-setup
+        if: runner.os == 'Windows' && env.SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signpath-unsigned-setup-${{ matrix.flavor }}
+          path: packaged/*-setup.exe
+          if-no-files-found: error
+      - name: Sign the installer (Authenticode, SignPath)
+        if: runner.os == 'Windows' && env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: packaged
+      # The WinGet installer entry (win-x64 and win-x86 only: WinGet needs Windows 10 1809+):
+      # the small program of `oncl-winget-setup`, built without its test harness, carrying the
+      # FINAL Setup.exe (signed above if signing is on) as its payload. It is made after the
+      # payload is final because Authenticode of the entry must cover it; then it is signed,
+      # and exactly those bytes are published and hashed for the WinGet manifest.
+      - name: Build the WinGet installer entry
+        if: runner.os == 'Windows' && !matrix.win7
+        shell: bash
+        run: |
+          cargo build --locked --release --target ${{ matrix.target }} \
+            -p oncl-winget-setup --no-default-features --bin oncl-winget-setup
+          cargo xtask package winget-setup --flavor "$FLAVOR" --version "$VERSION" \
+            --entry "target/${{ matrix.target }}/release/oncl-winget-setup.exe" \
+            --setup "packaged/openncalayer-$VERSION-$FLAVOR-setup.exe" --dist winget-unsigned
+      - name: Keep the unsigned WinGet installer entry for SignPath
+        id: unsigned-winget
+        if: runner.os == 'Windows' && !matrix.win7 && env.SIGNPATH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signpath-unsigned-winget-setup-${{ matrix.flavor }}
+          path: winget-unsigned/*-winget-setup.exe
+          if-no-files-found: error
+      - name: Sign the WinGet installer entry (Authenticode, SignPath)
+        if: runner.os == 'Windows' && !matrix.win7 && env.SIGNPATH == 'true'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-winget.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: winget-signed
+      # Signed bytes if SignPath ran, otherwise the unsigned entry, said so in the log: no
+      # signature is invented.
+      - name: Put the WinGet installer entry into the release files
+        if: runner.os == 'Windows' && !matrix.win7
+        shell: bash
+        run: |
+          if [ "$SIGNPATH" = true ]; then src=winget-signed; else
+            src=winget-unsigned
+            echo "::notice::SignPath is not configured: the $FLAVOR WinGet installer entry is NOT signed"
+          fi
+          cp "$src/openncalayer-$VERSION-$FLAVOR-winget-setup.exe" packaged/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ matrix.flavor }}
+          path: packaged/*
+          if-no-files-found: error
+
+  # The Chromium zip and the Firefox xpi. With the AMO secrets, and for a release only (a tag
+  # without a suffix), the xpi is signed as an unlisted add-on and replaces the unsigned one
+  # under the same name, so SHA256SUMS, the attestation, the release and the update index all
+  # carry the signed file. Without the secrets, and for every pre-release, the unsigned xpi is
+  # published as before (Firefox installs it only temporarily). Pre-releases are not signed
+  # because they share the Firefox version of their release (`0.1.1-rc.1` and `0.1.1` are
+  # both `0.1.1`): AMO signs a version once, and only versions that grow.
+  #
+  # web-ext comes from `extension/sign/package-lock.json` (`npm ci --ignore-scripts`, in a
+  # step without the secrets); the signing step has the secrets but installs nothing.
+  #
+  # AMO signs a version once. When a later job fails after the signing step succeeded, recover
+  # with "Re-run failed jobs"; "Re-run all jobs" signs the same version again and AMO refuses
+  # it, so that run fails at the signing step and the fix is a new tag.
+  extension:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Only whether the AMO secrets exist and whether this tag is signed: the secrets reach
+      # the signing step alone.
+      AMO: ${{ secrets.AMO_JWT_ISSUER != '' && secrets.AMO_JWT_SECRET != '' }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - run: cargo xtask ext build
+      - uses: actions/setup-node@v5
+        if: env.AMO == 'true' && env.PRERELEASE != 'true'
+        with:
+          node-version: 22
+      # No secrets here: the install runs the lockfile's packages, and nothing in them may
+      # see the AMO keys.
+      - name: Install web-ext (locked)
+        if: env.AMO == 'true' && env.PRERELEASE != 'true'
+        run: npm ci --ignore-scripts --prefix extension/sign
+      - name: Sign the Firefox add-on (AMO, unlisted)
+        if: env.AMO == 'true' && env.PRERELEASE != 'true'
+        env:
+          NPM_CONFIG_IGNORE_SCRIPTS: "true"
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          extension/sign/node_modules/.bin/web-ext sign --channel unlisted --no-input \
+            --approval-timeout 1200000 \
+            --source-dir target/extension/firefox --artifacts-dir target/extension/signed
+          signed=(target/extension/signed/*.xpi)
+          if [ "${#signed[@]}" -ne 1 ] || [ ! -f "${signed[0]}" ]; then
+            echo "::error::web-ext sign left ${#signed[@]} files matching target/extension/signed/*.xpi, expected one"
+            exit 1
+          fi
+          mv -f -- "${signed[0]}" "target/extension/openncalayer-firefox-$VERSION.xpi"
+          echo "::notice::The Firefox add-on is signed by AMO (unlisted): openncalayer-firefox-$VERSION.xpi"
+      - name: AMO signing skipped
+        if: env.AMO != 'true' || env.PRERELEASE == 'true'
+        run: |
+          if [ "$PRERELEASE" = true ]; then
+            echo "::notice::$VERSION is a pre-release: the Firefox .xpi is NOT signed (only releases are) and installs only temporarily"
+          else
+            echo "::notice::AMO is not configured (secrets AMO_JWT_ISSUER, AMO_JWT_SECRET): the Firefox .xpi is NOT signed and installs only temporarily"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-extension
+          path: |
+            target/extension/openncalayer-chromium-*.zip
+            target/extension/openncalayer-firefox-*.xpi
+          if-no-files-found: error
+
+  # One CycloneDX SBOM of the daemon and the relay, the dependencies of every platform.
+  sbom:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx@0.5.9
+      # cargo-cyclonedx writes one SBOM per workspace package; the relay's adds only itself
+      # to the daemon's.
+      - name: SBOM
+        run: |
+          cargo cyclonedx --format json --spec-version 1.5 --target all --no-build-deps \
+            --override-filename sbom --quiet
+          mkdir sbom
+          jq -s '.[0] as $daemon | .[1] as $relay | $daemon
+            | .components = (.components + $relay.components + [$relay.metadata.component]
+                | unique_by(."bom-ref"))
+            | .dependencies = (.dependencies + $relay.dependencies | unique_by(.ref))' \
+            crates/openncalayer/sbom.json crates/oncl-nmhost/sbom.json \
+            > "sbom/openncalayer-$VERSION.cdx.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-sbom
+          path: sbom/*
+          if-no-files-found: error
+
+  # The daemon with its test features (`e2e-prompter`) and every plugin port as packages,
+  # for conformance checks against the original. A workflow artifact only: `publish` takes
+  # the `release-*` artifacts, never this one.
+  conformance:
+    needs: [version, builtins]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            flavor: linux-x64
+          - os: windows-2025
+            flavor: win-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      # The built-in modules of the `builtins` job, embedded as they ship.
+      ONCL_BUILTINS_DIR: ${{ github.workspace }}/target/builtins
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: builtins
+          path: target/builtins
+      - name: Install system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libwayland-dev libgtk-3-dev
+      - name: Install toolchain (rust-toolchain.toml, with wasm32-unknown-unknown)
+        run: rustup toolchain install
+      - uses: ./.github/actions/pinned-toolchains
+      - name: Build the daemon with the test features
+        run: cargo build --release --locked -p openncalayer --features e2e-prompter
+      - name: Built-in modules embedded
+        shell: bash
+        run: |
+          exe=target/release/openncalayer
+          if [ "$RUNNER_OS" = Windows ]; then exe+=.exe; fi
+          cargo xtask builtins check --bin "$exe"
+      # Every port: none is in an empty index.
+      - name: Pack every plugin port
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/no-index"
+          cargo xtask plugin pending --channel beta --index "$RUNNER_TEMP/no-index" > "$RUNNER_TEMP/ports"
+          test -s "$RUNNER_TEMP/ports"
+          while read -r dir; do
+            cargo xtask plugin pack "$dir" --out dist/plugins
+          done < "$RUNNER_TEMP/ports"
+      - name: Checksums
+        shell: bash
+        run: |
+          exe=openncalayer
+          if [ "$RUNNER_OS" = Windows ]; then exe=openncalayer.exe; fi
+          cp "target/release/$exe" dist/
+          cd dist && sha256sum -- "$exe" plugins/*.onclp > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-${{ matrix.flavor }}
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+
+  # The standalone SDK programs as packages of their own: `oncl` (the command line) and
+  # `oncl-server` (the HTTP service, API disabled until the operator enables it), one archive
+  # each per flavor (`cargo xtask package platform`, named `oncl-<version>-<flavor>` and
+  # `oncl-server-<version>-<flavor>`), after the flavor's import gate (static CRT, Windows 7
+  # deny-list, glibc 2.28, universal macOS) and the smoke of the UNPACKED archives on the
+  # runner (hash, verify, a disabled server without a listener, a signature through the
+  # opted-in loopback server, a clean stop). Workflow artifacts only (`platform-*`): `publish`
+  # takes the `release-*` artifacts, so nothing here reaches the GitHub release, a registry or
+  # a browser store, and nothing is signed (no secret is used). The maintainer adds the
+  # archives to a release after review (docs/dev/release.md).
+  platform:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            flavor: win-x64
+          - os: windows-2025
+            target: i686-pc-windows-msvc
+            flavor: win-x86
+          - os: windows-2025
+            flavor: win7-x64
+            win7: x64
+          - os: windows-2025
+            flavor: win7-x86
+            win7: x86
+          - os: ubuntu-24.04
+            flavor: linux-x64
+          - os: macos-15
+            target: universal-apple-darwin
+            flavor: osx
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.win7 && 90 || 60 }}
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      FLAVOR: ${{ matrix.flavor }}
+      BIN: ${{ matrix.win7 && format('target/platform/win7/{0}', matrix.win7) || matrix.flavor == 'linux-x64' && 'target/platform/linux-x64' || matrix.flavor == 'osx' && 'target/platform/osx' || format('target/{0}/release', matrix.target) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain (rust-toolchain.toml)
+        shell: bash
+        run: |
+          rustup toolchain install
+          if [ -n "${{ matrix.win7 }}" ]; then
+            # The pinned nightly of `cargo xtask package platform-build` (xtask::win7::TOOLCHAIN).
+            rustup toolchain install nightly-2026-08-12 --profile minimal --component rust-src
+          elif [ "${{ matrix.target }}" = universal-apple-darwin ]; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          elif [ "$RUNNER_OS" = Windows ]; then
+            rustup target add "${{ matrix.target }}"
+          fi
+      # The licence texts of a package come from the unpacked crates of the cargo registry.
+      - name: Fetch the crates
+        run: cargo fetch --locked
+      - name: Build (Windows 10 and 11)
+        if: runner.os == 'Windows' && !matrix.win7
+        run: cargo build --locked --release --target ${{ matrix.target }} -p oncl-cli -p oncl-server
+      - name: Build (Windows 7)
+        if: matrix.win7
+        shell: bash
+        run: cargo xtask package platform-build --flavor "$FLAVOR" --out target/platform/win7
+      - name: Build in the glibc 2.28 container (Linux)
+        if: runner.os == 'Linux'
+        run: cargo xtask package platform-build --flavor linux-x64 --version "$VERSION"
+      # Both slices, joined; `cargo xtask package platform` refuses a program without both.
+      - name: Build (macOS universal)
+        if: matrix.target == 'universal-apple-darwin'
+        shell: bash
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            cargo build --locked --release --target "$target" -p oncl-cli -p oncl-server
+          done
+          mkdir -p "$BIN"
+          for exe in oncl oncl-server; do
+            lipo -create -output "$BIN/$exe" \
+              "target/x86_64-apple-darwin/release/$exe" "target/aarch64-apple-darwin/release/$exe"
+          done
+      - name: Archives, import gate and smoke of the unpacked archives
+        shell: bash
+        run: cargo xtask package platform --flavor "$FLAVOR" --bin "$BIN" --version "$VERSION" --dist platform
+      - name: Checksums
+        shell: bash
+        run: |
+          cd platform
+          if command -v sha256sum > /dev/null; then
+            sha256sum -- * > SHA256SUMS
+          else
+            shasum -a 256 -- * > SHA256SUMS
+          fi
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-${{ matrix.flavor }}
+          path: platform/*
+          retention-days: 30
+          if-no-files-found: error
+
+  # One CycloneDX SBOM per standalone program, the dependencies of every platform (AWS-LC is
+  # in `oncl`/`oncl-server` only for the Unix targets). A workflow artifact, like `platform`.
+  platform-sbom:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx@0.5.9
+      - name: SBOM
+        run: |
+          cargo cyclonedx --format json --spec-version 1.5 --target all --no-build-deps \
+            --override-filename sbom --quiet
+          mkdir sbom
+          cp crates/oncl-cli/sbom.json "sbom/oncl-$VERSION.cdx.json"
+          cp crates/oncl-server/sbom.json "sbom/oncl-server-$VERSION.cdx.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-sbom
+          path: sbom/*
+          retention-days: 30
+          if-no-files-found: error
+
+  # The pacman package `openncalayer-bin` (`cargo xtask package arch`) of the Linux archive
+  # of this run: its PKGBUILD names the archive at the release's final URL, with the sha256 of
+  # the archive built here, and in a pinned Arch Linux container makepkg builds the package
+  # from that very file. The package is installed and removed there as a check, and goes into
+  # the release with the other `release-*` files (SHA256SUMS, provenance).
+  arch:
+    needs: [version, binaries]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # makepkg's container: Arch Linux with base-devel, pinned by digest.
+      ARCH_IMAGE: archlinux:base-devel@sha256:624bdc7fc6615155d67bc34cf7146c0c9fd0e3c92943977da63a630e4ca49c30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          name: release-binaries-linux-x64
+          path: archive
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: PKGBUILD and .SRCINFO
+        run: |
+          archive="openncalayer-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+          sha256="$(sha256sum < "archive/$archive" | cut -d ' ' -f 1)"
+          cargo xtask package arch --version "$VERSION" --sha256 "$sha256" --out arch
+          # makepkg finds the archive by its name in the build directory and does not
+          # download it: the release does not exist yet.
+          cp "archive/$archive" arch/
+      # makepkg as an unprivileged user: .SRCINFO as makepkg prints it, the archive checked
+      # by sha256, the package built (without installing its dependencies: packaging needs
+      # none) and listed; then installed with its dependencies, started and removed.
+      - name: makepkg, install and remove in Arch Linux
+        run: |
+          mkdir -p release-arch
+          chmod 777 release-arch
+          # pacman's pkgver of the version: the hyphen is dropped (cargo xtask package arch).
+          export PKGVER="${VERSION//-/}"
+          docker run --rm -e VERSION -e PKGVER -v "$PWD/arch:/arch:ro" -v "$PWD/release-arch:/out" "$ARCH_IMAGE" bash -euo pipefail -c '
+            useradd -m builder
+            cp -r /arch /home/builder/pkg
+            chown -R builder: /home/builder/pkg
+            cd /home/builder/pkg
+            runuser -u builder -- makepkg --printsrcinfo > /tmp/srcinfo
+            diff -u .SRCINFO /tmp/srcinfo
+            runuser -u builder -- makepkg --nodeps --noconfirm
+            pacman -Qlp openncalayer-bin-*.pkg.tar.*
+            cp openncalayer-bin-*.pkg.tar.zst /out/
+            pacman -Syu --noconfirm
+            pacman -U --noconfirm openncalayer-bin-*.pkg.tar.zst
+            test "$(openncalayer --version)" = "openncalayer $VERSION"
+            test "$(pacman -Q openncalayer-bin)" = "openncalayer-bin $PKGVER-1"
+            test "$(cat /usr/lib/openncalayer/package-manager)" = pacman
+            pacman -R --noconfirm openncalayer-bin
+            test ! -e /usr/bin/openncalayer
+          '
+          ls -l release-arch
+          files=(release-arch/*)
+          test "${#files[@]}" = 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-arch
+          path: release-arch/*
+          if-no-files-found: error
+
+  publish:
+    needs: [version, binaries, extension, sbom, arch]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: Build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+      # Every release is created as a draft: the lab tests this run's installers and sets the
+      # commit status `vm-smoke`, the macOS smoke runs, and the maintainer publishes the
+      # draft once both are green (docs/dev/release.md). Only a version with a suffix is
+      # marked a pre-release.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--draft)
+          if [ "$PRERELEASE" = true ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "OpenNCALayer $VERSION" \
+            --generate-notes \
+            "${flags[@]}"
+
+  # The version into the update indexes: a pre-release into beta only, a release into
+  # stable and into beta, so a beta installation is offered it too. Each index gets its own
+  # next `seq` and keeps its versions. A pull request with the unsigned indexes; the
+  # maintainer signs every one of them on the PR branch, and the index check then runs on
+  # that push.
+  index:
+    needs: [version, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          # The build below runs build scripts; create-pull-request brings its own token.
+          persist-credentials: false
+      - name: Install toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      # `index add` and `index check` refuse a tag without the TUF trust root, `crates/oncl-update/keys/root.json`,
+      # which the client embeds (without it its updater is off): a build without one cannot
+      # update itself, so no installation may be moved onto it. Such a release (before the
+      # maintainer's keys exist) gets no index pull request, with a notice.
+      - name: The tag's update key
+        id: key
+        run: |
+          git fetch --no-tags --depth 1 origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          if git cat-file -e "refs/tags/$GITHUB_REF_NAME:crates/oncl-update/keys/root.json"; then
+            echo "keyed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$GITHUB_REF_NAME lacks crates/oncl-update/keys/root.json: its build cannot update itself; it is not added to the update indexes"
+            echo "keyed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download the release
+        if: steps.key.outputs.keyed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/assets" \
+            --pattern '*.nupkg' --pattern 'releases.*.json' \
+            --pattern 'openncalayer-chromium-*.zip' --pattern 'openncalayer-firefox-*.xpi'
+      - name: Add the version to the indexes
+        if: steps.key.outputs.keyed == 'true'
+        id: add
+        run: |
+          if [ "$PRERELEASE" = true ]; then
+            channels=(beta)
+            subject="the beta index"
+          else
+            channels=(stable beta)
+            subject="the stable and beta indexes"
+          fi
+          for channel in "${channels[@]}"; do
+            cargo xtask index add --channel "$channel" --tag "$GITHUB_REF_NAME" \
+              --release-assets "$RUNNER_TEMP/assets"
+          done
+          {
+            echo "Adds $VERSION to $subject (\`cargo xtask index add\`, rollout 100 %): a release goes into \`stable\` and \`beta\`, a pre-release into \`beta\` only."
+            echo
+            echo "\`tuf check\` refuses an index that \`tuf/v1\` does not list. To publish them, on this branch:"
+            echo
+            echo "1. optionally lower \`rollout\` of the new version;"
+            echo "2. \`cargo xtask index check updates/v1 --base origin/main\`;"
+            echo "3. \`cargo xtask tuf update --keys <TUF key directory>\` signs the new targets and snapshot over these indexes (CI never signs with the offline keys), then \`cargo xtask tuf check --no-timestamp --base origin/main\`;"
+            echo "4. commit the indexes and \`tuf/v1\` and push: the index check runs on that push;"
+            echo "5. merge: GitHub Pages publishes \`updates/\` and \`tuf/v1/\`."
+          } > "$RUNNER_TEMP/index-pr.md"
+          echo "subject=$subject" >> "$GITHUB_OUTPUT"
+      - name: Open the index pull request
+        if: steps.key.outputs.keyed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          # The indexes.
+          add-paths: updates/v1
+          branch: updates/${{ github.ref_name }}
+          base: main
+          commit-message: "chore(updates): add ${{ env.VERSION }} to ${{ steps.add.outputs.subject }}"
+          title: "chore(updates): add ${{ env.VERSION }} to ${{ steps.add.outputs.subject }}"
+          body-path: ${{ runner.temp }}/index-pr.md

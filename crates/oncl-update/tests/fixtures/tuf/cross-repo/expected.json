@@ -1,0 +1,16 @@
+{
+  "name": "cross-repo",
+  "attack": "the files of the valid (tuf/v1) repository served behind the root of delegated-valid (tuf/v2): its timestamp is signed by a key the v2 root does not trust",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": null,
+  "contract": {
+    "refresh": "refused at the timestamp: signature, before anything is saved",
+    "roles": {}
+  },
+  "python_tuf": {
+    "refresh": "UnsignedMetadataError",
+    "error": "timestamp was signed by 0/1 keys",
+    "targets": {}
+  }
+}

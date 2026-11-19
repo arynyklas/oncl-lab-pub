@@ -1,0 +1,68 @@
+// Where a plugin saves a file: who asks, the file it suggests, and the system save dialog on
+// top of it.
+
+import { Button } from "std-widgets.slint";
+import { ActionBar, DialogScroll, EscapeScope, Metrics, NameText, Subheading } from "common.slint";
+
+export component SaveDialog inherits Window {
+    title: "OpenNCALayer";
+    always-on-top: true;
+    min-width: Metrics.dialog-min-width;
+    min-height: Metrics.min-height;
+    forward-focus: browse-button;
+
+    // The requesting page's origin.
+    in property <string> origin;
+    // The plugin's name.
+    in property <string> source;
+    // The file name the plugin suggests.
+    in property <string> file-name;
+    // The translated header line.
+    out property <string> requester: @tr("Request from: {}", root.origin);
+    // The buttons are inside the window, whatever the text and the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    callback browse();
+    callback cancel();
+
+    EscapeScope {
+        escape => {
+            root.cancel();
+        }
+        VerticalLayout {
+            padding: Metrics.pad;
+            spacing: Metrics.gap;
+            DialogScroll {
+                NameText {
+                    text: root.requester;
+                }
+
+                NameText {
+                    text: @tr("Plugin: {}", root.source);
+                }
+
+                Subheading {
+                    text: @tr("Save the file: {}", root.file-name);
+                    wrap: char-wrap;
+                }
+            }
+
+            actions := ActionBar {
+                browse-button := Button {
+                    text: @tr("Browse…");
+                    primary: true;
+                    clicked => {
+                        root.browse();
+                    }
+                }
+
+                Button {
+                    text: @tr("Cancel");
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+            }
+        }
+    }
+}

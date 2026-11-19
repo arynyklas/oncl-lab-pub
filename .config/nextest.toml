@@ -1,0 +1,47 @@
+# cargo-nextest (https://nexte.st). CI runs the workspace's tests with the `ci` profile
+# (.github/workflows/ci.yml, docs/dev/development.md «Тесты»); `cargo test` keeps working
+# as before and does not read this file.
+#
+# Nextest runs every test in its own process. A lock or a counter in a `static` of a test
+# binary therefore no longer serialises the tests of that binary: the groups below do it
+# where tests share something outside their process.
+
+[test-groups]
+# The daemon tests that pick a port by scanning 13580..=13679 (bind, close, hand the number
+# to a daemon): two processes can pick the same port at the same time. One at a time.
+daemon-ports = { max-threads = 1 }
+# The built-in modules' memory limits (`one_large_call_at_a_time`, `turn`): calls of up to
+# 64 MiB that the binary ran one at a time. In parallel they would sum on a small runner.
+builtin-memory = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary_id(openncalayer::bridge) | binary_id(openncalayer::plugins) | binary_id(openncalayer::ports_e2e) | binary_id(openncalayer::tokens)"
+test-group = "daemon-ports"
+
+[[profile.default.overrides]]
+filter = "binary_id(oncl-builtin-tests::limits) | binary_id(oncl-builtin-tests::call_heap)"
+test-group = "builtin-memory"
+
+[profile.ci]
+# The ignored tests CI does not run (it runs the others with `--run-ignored all`): live
+# services (`live_`, the `live` job), Zola (`zola_`, the `site` job), the benchmarks
+# (`bench_`, the `bench` job), the two that write more than 4 GiB of real bytes (by hand,
+# release probes) and three developer tools that need their own input or program
+# (`ONCL_DENSE_PDF`, `LOOPBACK_PKI_DIR`, `ONCL_SMOKE_DIR`).
+default-filter = """
+not (test(live_) | test(zola_) | test(bench_) | test(offset_over_4gib)
+  | test(common_region_replay_crosses_four_gib) | test(external_dense_pdf_signs_and_verifies)
+  | test(serve_a_synthetic_authority_until_stdin_closes) | test(smoke_data_dir))
+"""
+fail-fast = false
+# Retries find flaky tests and do not hide them: a test that fails and then passes is
+# reported as FLAKY and still fails the run.
+retries = 2
+flaky-result = "fail"
+# A test running for 30 minutes is killed (the first test that builds the plugin ports
+# waits for that build).
+slow-timeout = { period = "60s", terminate-after = 30 }
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "junit.xml"

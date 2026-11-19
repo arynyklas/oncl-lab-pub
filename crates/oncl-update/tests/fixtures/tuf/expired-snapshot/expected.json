@@ -1,0 +1,18 @@
+{
+  "name": "expired-snapshot",
+  "attack": "2.snapshot.json is past its expires",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "snapshot",
+  "error_class": "ExpiredMetadataError: snapshot expires 2026-11-15T12:00:00Z is before the clock",
+  "changed_files_vs_valid": [
+    "metadata/2.snapshot.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "ExpiredMetadataError: snapshot.json is expired",
+    "diverges_from_contract": false
+  }
+}

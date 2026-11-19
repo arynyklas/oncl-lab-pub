@@ -1,0 +1,63 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "No patched rsa0.9 exists: production oncl-pki uses it only for generation/decoding/public operations; private prehash/OAEP/PKCS#1 v1.5 decryption (legacy envelopes) use BCrypt on Windows and aws-lc-rs1.19.0 on Unix. Synthetic-fixture tests/xtask and the test-only token emulator perform raw RSA with synthetic keys, never server/user private operations." },
+    # Unmaintained (no vulnerability, no maintained release yet) deep in Slint's winit
+    # backend on Linux: Wayland title bar fonts, and the zbus split crates of AT-SPI.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: transitive via winit/sctk-adwaita, unmaintained only" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: transitive via zbus (accesskit_unix, slint winit), unmaintained only" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: transitive via zbus (accesskit_unix, slint winit), unmaintained only" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: transitive via zbus (accesskit_unix, slint winit), unmaintained only" },
+    # Unmaintained (upstream archived 2026-10-01, no vulnerability) in Slint's skia renderer.
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils: transitive via spin_on (i-slint-renderer-skia, slint-build, slint-macros), unmaintained only, no safe upgrade available" },
+    # Unmaintained (no vulnerability) in Slint's core; no direct use here.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: transitive via i-slint-core (slint), unmaintained only, no slint release without it" },
+]
+
+[licenses]
+# Covers the whole dependency stack. Any dependency outside this list fails
+# `cargo deny check`.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0", # webpki-roots (ureq `rustls`)
+    "BSL-1.0", # clipboard-win, error-code (Slint's winit backend)
+    "Unlicense", # ksni (oncl-ui's tray on Linux), public-domain dedication
+    # Slint (oncl-ui), under its royalty-free license: the storage dialog shows AboutSlint.
+    "LicenseRef-Slint-Royalty-free-2.0",
+]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    { crate = "openssl", reason = "Unix private RSA uses pinned AWS-LC, not system OpenSSL; TLS remains rustls/ring" },
+    { crate = "openssl-sys", reason = "No system OpenSSL dependency; preserve deployment/Win7 matrix" },
+    { crate = "native-tls", reason = "rustls on ring is the only TLS stack" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git sources: only the forks of crates.io packages that Cargo.toml pins by commit
+# (`[patch.crates-io]`, `[workspace.dependencies]`; docs/dev/development.md, "Форки
+# сторонних крейтов").
+allow-git = [
+    "https://github.com/arynyklas/slint",
+    "https://github.com/arynyklas/velopack",
+    "https://github.com/arynyklas/multer",
+]

@@ -1,0 +1,131 @@
+[package]
+name = "oncl-plugin"
+description = "OpenNCALayer's plugins: the package (`.onclp`), its manifest (`plugin.toml`) and the WebAssembly runtime they run in"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+keywords = ["plugin", "wasm", "wasmi", "ncalayer", "sandbox"]
+categories = ["wasm", "api-bindings"]
+include = ["/src/**", "/LICENSE", "/NOTICE"]
+
+[features]
+default = []
+distribution = ["dep:oncl-update", "dep:zip"]
+
+[dependencies]
+oncl-xml.workspace = true
+# `keystore_new_key`: the DER of a new key's PEM request.
+base64.workspace = true
+# The DER of a chosen key's certificate.
+der.workspace = true
+# `random`: the system's generator.
+getrandom.workspace = true
+# `Locale`, the dialogs and the key choice of the `keys`, `dialogs` and `files` capabilities.
+oncl-flows.workspace = true
+# The ABI: what the host functions take and return.
+oncl-pdk.workspace = true
+# Signing, time-stamps, certificate details and the HTTP transport of the capabilities.
+oncl-pki.workspace = true
+# `AddInfo`, `SessionId`: what a call comes with.
+oncl-protocol.workspace = true
+# `Tokens`: the hardware tokens the `keys` capability's storage dialog offers.
+oncl-token.workspace = true
+# `Store`: the catalog (the update index the TUF client verified) kept and checked again, the
+# package sums.
+oncl-update = { workspace = true, optional = true }
+semver.workspace = true
+serde.workspace = true
+# `Store`: `state.json`.
+serde_json.workspace = true
+# `Package::sha256`: checked against the update index.
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+toml.workspace = true
+tracing.workspace = true
+# `HttpPrefix`: the URLs a plugin may reach.
+url.workspace = true
+wasmi.workspace = true
+# `LimiterError`: the signature of the memory limiter's hooks.
+wasmi_core.workspace = true
+zip = { workspace = true, optional = true }
+# The passwords of `dialog_password`, wiped when dropped.
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# `local_time`: the system's time zone at an instant.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Time"] }
+
+[target.'cfg(unix)'.dependencies]
+# `local_time`: the system's time zone at an instant (`localtime_r`).
+libc.workspace = true
+
+[dev-dependencies]
+oncl-flows = { path = "../oncl-flows", features = ["testing"] }
+# `testing`: `tsp::MockTsa`, `RouteTransport`.
+oncl-pki = { path = "../oncl-pki", features = ["testing"] }
+oncl-testkit.workspace = true
+# `testing`: the TUF repository the catalog's store tests are served by.
+oncl-update = { workspace = true, features = ["testing"] }
+# `emulator`: software tokens for the `keys` capability's token tests.
+oncl-token = { path = "../oncl-token", features = ["emulator"] }
+tempfile.workspace = true
+time = { workspace = true, features = ["macros"] }
+tracing-subscriber.workspace = true
+wat.workspace = true
+# Requests read and certificates issued in the key file tests.
+x509-cert.workspace = true
+
+[[test]]
+name = "builtins"
+required-features = ["distribution"]
+[[test]]
+name = "caps"
+required-features = ["distribution"]
+[[test]]
+name = "caps_crypto"
+required-features = ["distribution"]
+[[test]]
+name = "caps_files"
+required-features = ["distribution"]
+[[test]]
+name = "caps_flows"
+required-features = ["distribution"]
+[[test]]
+name = "caps_keys"
+required-features = ["distribution"]
+[[test]]
+name = "caps_keystore"
+required-features = ["distribution"]
+[[test]]
+name = "caps_net"
+required-features = ["distribution"]
+[[test]]
+name = "caps_state"
+required-features = ["distribution"]
+[[test]]
+name = "caps_tokens"
+required-features = ["distribution"]
+[[test]]
+name = "caps_verify"
+required-features = ["distribution"]
+[[test]]
+name = "example"
+required-features = ["distribution"]
+[[test]]
+name = "modules"
+required-features = ["distribution"]
+[[test]]
+name = "operations"
+[[test]]
+name = "package"
+required-features = ["distribution"]
+[[test]]
+name = "runtime"
+required-features = ["distribution"]
+[[test]]
+name = "store"
+required-features = ["distribution"]

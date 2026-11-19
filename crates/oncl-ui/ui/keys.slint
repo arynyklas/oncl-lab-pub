@@ -1,0 +1,210 @@
+// The key dialog: one row per key of the opened store. Rows of keys whose OCSP check is
+// still running show a spinner and change in place when it ends.
+
+import { Button, Palette, ScrollView, Spinner, VerticalBox } from "std-widgets.slint";
+import { ActionBar, DialogScroll, EscapeScope, NameText, StatusArea, Tone } from "common.slint";
+
+// A key in the list.
+export struct KeyItem {
+    title: string,
+    details: string,
+    // Only enabled keys may sign.
+    enabled: bool,
+    // Its certificate status is still being checked: not enabled yet.
+    pending: bool,
+    // Why the key may not sign; empty if it may or is still being checked.
+    note: string,
+    // The revocation mark, `revoked <date>`; empty unless the key is revoked.
+    revoked: string,
+}
+
+export component KeyDialog inherits Window {
+    title: "OpenNCALayer";
+    always-on-top: true;
+    min-width: 520px;
+    min-height: 320px;
+
+    // The requesting page's origin.
+    in property <string> origin;
+    // Authentication rather than signing.
+    in property <bool> authenticate;
+    // Handing the key's certificate details to the page: nothing is signed.
+    in property <bool> key-info;
+    // A line about the request, e.g. the file to be signed; empty for none.
+    in property <string> detail;
+    // Why the previous choice failed; empty for none.
+    in property <string> error;
+    in property <[KeyItem]> keys;
+    // Whether any key is enabled or still being checked.
+    in property <bool> has-usable;
+    // Index of the chosen key, -1 for none.
+    in-out property <int> selected: -1;
+
+    // The buttons are inside the window, whatever the text and the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    // How tall the header text is (its lines counted), for the tests.
+    out property <length> header-content: header.content-height;
+
+    callback sign();
+    callback cancel();
+
+    // The dialog has been shown for a quiet moment: a burst of clicks on its opening cannot
+    // reach the button.
+    in property <bool> armed;
+    // Whether the button may be pressed: the selected key is enabled and the dialog is armed.
+    out property <bool> can-sign: root.armed && root.selected >= 0 && root.keys[root.selected].enabled;
+
+    // Escape works from the first moment; the focus starts here, never on «Sign».
+    forward-focus: keys;
+    keys := EscapeScope {
+        escape => {
+            root.cancel();
+        }
+    VerticalBox {
+        header := DialogScroll {
+            vertical-stretch: 0;
+            max-height: 110px;
+            NameText {
+                text: @tr("Request from: {}", root.origin);
+            }
+
+            Text {
+                text: root.key-info ? @tr("Action: key information") : root.authenticate ? @tr("Action: authentication") : @tr("Action: signing");
+                font-weight: 700;
+            }
+
+            if !root.detail.is-empty: Text {
+                text: root.detail;
+                wrap: char-wrap;
+            }
+        }
+
+        Text {
+            text: root.has-usable ? @tr("Choose a key") : @tr("No suitable key found");
+            color: root.has-usable ? Palette.foreground : Tone.error();
+        }
+
+        // Every row exists, so that Tab reaches each of them and scrolls it into view.
+        ScrollView {
+          vertical-stretch: 1;
+          min-height: 100px;
+          VerticalLayout {
+            alignment: start;
+            for row[i] in root.keys: Rectangle {
+                border-radius: 4px;
+                border-width: row-focus.has-focus ? 2px : 0px;
+                border-color: Palette.accent-background;
+                background: i == root.selected ? Palette.selection-background : transparent;
+                accessible-role: list-item;
+                accessible-label: row.title;
+                accessible-description: row.pending ? row.details + "\n" + @tr("Checking the certificate status…") : row.note.is-empty ? row.details : row.details + "\n" + row.note;
+                accessible-item-selectable: true;
+                accessible-item-selected: i == root.selected;
+                accessible-item-index: i;
+                accessible-item-count: root.keys.length;
+                accessible-action-default => {
+                    root.selected = i;
+                }
+                // The keyboard reaches the row (Tab) and selects it (Enter or Space); only the
+                // button signs.
+                row-focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Return || event.text == " " {
+                            root.selected = i;
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+
+                TouchArea {
+                    clicked => {
+                        root.selected = i;
+                    }
+                    // A double-click selects, like a click: only the button agrees.
+                    double-clicked => {
+                        root.selected = i;
+                    }
+                }
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+                    Text {
+                        text: row.title;
+                        font-weight: 700;
+                        color: !row.enabled && !row.pending ? Tone.quiet() : i == root.selected ? Palette.selection-foreground : Palette.foreground;
+                    }
+
+                    Text {
+                        text: row.details;
+                        wrap: word-wrap;
+                        color: !row.enabled && !row.pending ? Tone.quiet() : i == root.selected ? Palette.selection-foreground : Palette.foreground;
+                    }
+
+                    if row.pending: HorizontalLayout {
+                        spacing: 6px;
+                        alignment: start;
+                        // On the selected row the spinner sits on the window colour, so it
+                        // stands out from the selection background.
+                        Rectangle {
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: i == root.selected ? Palette.background : transparent;
+                            Spinner {
+                                indeterminate: true;
+                                width: 14px;
+                                height: 14px;
+                            }
+                        }
+
+                        Text {
+                            text: @tr("Checking the certificate status…");
+                            vertical-alignment: center;
+                            font-italic: true;
+                            color: i == root.selected ? Palette.selection-foreground : Tone.quiet();
+                        }
+                    }
+
+                    if !row.revoked.is-empty: Text {
+                        text: row.revoked;
+                        font-weight: 700;
+                        color: Tone.error();
+                    }
+                }
+            }
+          }
+        }
+
+        if root.selected >= 0 && !root.keys[root.selected].enabled && !root.keys[root.selected].note.is-empty: StatusArea {
+            message: root.keys[root.selected].note;
+            error: true;
+        }
+
+        if !root.error.is-empty: StatusArea {
+            message: root.error;
+            error: true;
+        }
+
+        actions := ActionBar {
+            Button {
+                text: root.key-info ? @tr("Send") : @tr("Sign");
+                primary: true;
+                enabled: root.can-sign;
+                clicked => {
+                    root.sign();
+                }
+            }
+
+            Button {
+                text: @tr("Cancel");
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+    }
+}

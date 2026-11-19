@@ -1,0 +1,554 @@
+//! The XPath subset of `signXml`: absolute location paths of element names, each step
+//! optionally `[n]`, with `/` (child) or `//` (descendant) separators: `/root/body[2]`,
+//! `//data`, `/a//b[1]`; at most [`MAX_STEPS`] steps.
+//!
+//! Without [`Namespaces`], a name matches the qualified name as written in the document,
+//! prefix included. The one exception follows Kalkan's namespace context
+//! (`XMLUtil.PkiNamespaceContext`): the prefix `SOAP-ENV` stands for the SOAP 1.1 envelope
+//! namespace whatever prefix the document binds to it, so `/SOAP-ENV:Envelope/SOAP-ENV:Body`
+//! selects `<soapenv:Body>`. (Kalkan maps every other prefix to the XMLDSig namespace and an
+//! unprefixed name to no namespace; literal matching selects whatever that would select when
+//! the document uses those prefixes.)
+//!
+//! With [`Namespaces`], names are matched as XPath does: a prefixed name by its namespace
+//! URI and local name, the prefix bound by the caller (an unbound one is an error); an
+//! unprefixed name is in no namespace.
+
+use super::XmlError;
+use super::parse::element_qname;
+use roxmltree::{Document, Node, NodeId};
+
+/// Most steps in an expression: each costs up to a pass over the document.
+pub(crate) const MAX_STEPS: usize = 32;
+
+const SOAP_ENV_PREFIX: &str = "SOAP-ENV:";
+const SOAP11_ENVELOPE_NS: &str = "http://schemas.xmlsoap.org/soap/envelope/";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Axis {
+    Child,
+    Descendant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Step<'e> {
+    axis: Axis,
+    name: &'e str,
+    /// 1-based position among the parent's children of that name.
+    position: Option<usize>,
+}
+
+/// The namespaces of an expression's prefixes: each bound one, and the namespace of any
+/// other prefix, if every prefix has one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Namespaces<'n> {
+    /// Prefix → namespace URI.
+    pub bindings: &'n [(&'n str, &'n str)],
+    /// The namespace of any other prefix.
+    pub other: Option<&'n str>,
+}
+
+impl Namespaces<'_> {
+    fn uri(&self, prefix: &str) -> Option<&str> {
+        self.bindings
+            .iter()
+            .find(|(p, _)| *p == prefix)
+            .map(|(_, uri)| *uri)
+            .or(self.other)
+    }
+}
+
+fn unsupported(expr: &str) -> XmlError {
+    XmlError::XPath(format!("unsupported XPath expression {expr:?}"))
+}
+
+fn parse(expr: &str) -> Result<Vec<Step<'_>>, XmlError> {
+    let mut steps = Vec::new();
+    let mut rest = expr;
+    while !rest.is_empty() {
+        let axis = if let Some(r) = rest.strip_prefix("//") {
+            rest = r;
+            Axis::Descendant
+        } else if let Some(r) = rest.strip_prefix('/') {
+            rest = r;
+            Axis::Child
+        } else {
+            return Err(unsupported(expr));
+        };
+        let end = rest.find('/').unwrap_or(rest.len());
+        let (step, tail) = rest.split_at(end);
+        rest = tail;
+        let (name, position) = match step.split_once('[') {
+            None => (step, None),
+            Some((name, predicate)) => {
+                let digits = predicate
+                    .strip_suffix(']')
+                    .ok_or_else(|| unsupported(expr))?;
+                if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(unsupported(expr));
+                }
+                let n: usize = digits.parse().map_err(|_| unsupported(expr))?;
+                if n == 0 {
+                    return Err(unsupported(expr));
+                }
+                (name, Some(n))
+            }
+        };
+        if !is_qname(name) {
+            return Err(unsupported(expr));
+        }
+        steps.push(Step {
+            axis,
+            name,
+            position,
+        });
+    }
+    if steps.is_empty() {
+        return Err(unsupported(expr));
+    }
+    Ok(steps)
+}
+
+/// An XML name with at most one colon, neither first nor last.
+fn is_qname(name: &str) -> bool {
+    let start = |c: char| c.is_alphabetic() || c == '_';
+    let rest = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '\u{B7}');
+    let mut parts = name.split(':');
+    let ok = |part: &str| {
+        let mut chars = part.chars();
+        chars.next().is_some_and(start) && chars.all(rest)
+    };
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(local), None, None) => ok(local),
+        (Some(prefix), Some(local), None) => ok(prefix) && ok(local),
+        _ => false,
+    }
+}
+
+fn name_matches(node: Node<'_, '_>, name: &str, ns: Option<Namespaces<'_>>) -> bool {
+    if !node.is_element() {
+        return false;
+    }
+    if let Some(ns) = ns {
+        let (uri, local) = match name.split_once(':') {
+            // Prefixes are checked to be bound before any matching.
+            Some((prefix, local)) => (ns.uri(prefix), local),
+            None => (None, name),
+        };
+        return node.tag_name().namespace().filter(|u| !u.is_empty()) == uri
+            && node.tag_name().name() == local;
+    }
+    match name.strip_prefix(SOAP_ENV_PREFIX) {
+        Some(local) => {
+            node.tag_name().namespace() == Some(SOAP11_ENVELOPE_NS)
+                && node.tag_name().name() == local
+        }
+        None => element_qname(node) == name,
+    }
+}
+
+/// Element children of `parent` matching `step`, in document order.
+fn matching_children<'a, 'i, 'q>(
+    parent: Node<'a, 'i>,
+    step: &Step<'q>,
+    ns: Option<Namespaces<'q>>,
+) -> impl Iterator<Item = Node<'a, 'i>> + use<'a, 'i, 'q> {
+    let name = step.name;
+    let named = parent
+        .children()
+        .filter(move |c| name_matches(*c, name, ns));
+    let (skip, take) = match step.position {
+        None => (0, usize::MAX),
+        Some(n) => (n - 1, 1),
+    };
+    named.skip(skip).take(take)
+}
+
+/// Nodes of `context` (in document order) that are not inside an earlier one's subtree.
+fn outermost<'a, 'i>(
+    doc: &'a Document<'i>,
+    context: &[NodeId],
+) -> impl Iterator<Item = Node<'a, 'i>> {
+    let mut searched_until = 0;
+    context
+        .iter()
+        .map(|id| doc.get_node(*id).expect("node of this document"))
+        .filter(move |node| {
+            if node.range().start < searched_until {
+                return false;
+            }
+            searched_until = node.range().end;
+            true
+        })
+}
+
+/// Nodes selected by `step` from `context`, in document order without duplicates.
+fn apply<'i, 'q>(
+    doc: &Document<'i>,
+    context: &[NodeId],
+    step: &Step<'q>,
+    ns: Option<Namespaces<'q>>,
+) -> Vec<NodeId> {
+    let mut next: Vec<NodeId> = Vec::new();
+    match step.axis {
+        Axis::Child => {
+            for id in context {
+                let node = doc.get_node(*id).expect("node of this document");
+                next.extend(matching_children(node, step, ns).map(|n| n.id()));
+            }
+        }
+        // A context node inside a subtree already searched adds nothing.
+        Axis::Descendant => {
+            for node in outermost(doc, context) {
+                for d in node.descendants().filter(|d| d.is_element() || d.is_root()) {
+                    next.extend(matching_children(d, step, ns).map(|n| n.id()));
+                }
+            }
+        }
+    }
+    next.sort_unstable_by_key(|id| id.get());
+    next.dedup();
+    next
+}
+
+/// First node selected by the last `step` from `context`, in document order.
+fn first<'a, 'i, 'q>(
+    doc: &'a Document<'i>,
+    context: &[NodeId],
+    step: &Step<'q>,
+    ns: Option<Namespaces<'q>>,
+) -> Option<Node<'a, 'i>> {
+    match (step.axis, step.position) {
+        // The outermost context nodes have disjoint subtrees in document order: the first
+        // named descendant of the first one that has any is the answer.
+        (Axis::Descendant, None) => outermost(doc, context).find_map(|node| {
+            node.descendants()
+                .skip(1)
+                .find(|d| name_matches(*d, step.name, ns))
+        }),
+        // Matches of nested context nodes interleave: take the earliest of each.
+        (Axis::Child, _) => context
+            .iter()
+            .filter_map(|id| matching_children(doc.get_node(*id)?, step, ns).next())
+            .min_by_key(|n| n.id().get()),
+        (Axis::Descendant, Some(_)) => {
+            let first = apply(doc, context, step, ns).into_iter().next()?;
+            doc.get_node(first)
+        }
+    }
+}
+
+/// [`select_first_in`] with the names as written.
+#[cfg(test)]
+pub(crate) fn select_first<'a, 'i>(
+    doc: &'a Document<'i>,
+    expr: &str,
+) -> Result<Option<Node<'a, 'i>>, XmlError> {
+    select_first_in(doc, expr, None)
+}
+
+/// First element selected by `expr`, its names in `ns` if given (as written without), in
+/// document order. Each step costs at most one pass over the document; intermediate node
+/// sets are kept as node ids.
+///
+/// # Errors
+///
+/// [`XmlError::XPath`] if `expr` is outside the supported subset, longer than
+/// [`MAX_STEPS`] steps, or has a prefix `ns` does not bind.
+pub(crate) fn select_first_in<'a, 'i, 'q>(
+    doc: &'a Document<'i>,
+    expr: &'q str,
+    ns: Option<Namespaces<'q>>,
+) -> Result<Option<Node<'a, 'i>>, XmlError> {
+    let steps = parse(expr)?;
+    if steps.len() > MAX_STEPS {
+        return Err(XmlError::XPath(format!(
+            "XPath expression {expr:?} has more than {MAX_STEPS} steps"
+        )));
+    }
+    if let Some(ns) = ns {
+        for step in &steps {
+            if let Some((prefix, _)) = step.name.split_once(':')
+                && ns.uri(prefix).is_none()
+            {
+                return Err(XmlError::XPath(format!(
+                    "XPath expression {expr:?}: the prefix {prefix:?} is not bound"
+                )));
+            }
+        }
+    }
+    let (last, inner) = steps.split_last().expect("at least one step");
+    let mut context = vec![doc.root().id()];
+    for step in inner {
+        context = apply(doc, &context, step, ns);
+        if context.is_empty() {
+            return Ok(None);
+        }
+    }
+    Ok(first(doc, &context, last, ns))
+}
+
+/// Streaming adapter for the same compiled XPath subset, with bounded ancestor
+/// automaton state rather than node sets proportional to document cardinality.
+pub(crate) fn select_indexed(
+    document: &mut crate::XmlDocument,
+    expression: &str,
+    namespaces: &[(&str, &str)],
+    scope: &oncl_pki::resource::ResourceScope,
+) -> Result<Option<crate::XmlNode>, crate::XmlSourceError> {
+    select_indexed_mode(document, expression, namespaces, scope, false)
+}
+pub(crate) fn select_indexed_unique(
+    document: &mut crate::XmlDocument,
+    expression: &str,
+    namespaces: &[(&str, &str)],
+    scope: &oncl_pki::resource::ResourceScope,
+) -> Result<Option<crate::XmlNode>, crate::XmlSourceError> {
+    select_indexed_mode(document, expression, namespaces, scope, true)
+}
+fn select_indexed_mode(
+    document: &mut crate::XmlDocument,
+    expression: &str,
+    namespaces: &[(&str, &str)],
+    scope: &oncl_pki::resource::ResourceScope,
+    unique: bool,
+) -> Result<Option<crate::XmlNode>, crate::XmlSourceError> {
+    use crate::XmlEventKind;
+    use oncl_pki::resource::ProcessingError;
+    document.check_scope(scope)?;
+    if expression.len() > 65536
+        || expression.bytes().filter(|b| *b == b'/').count() > 2 * MAX_STEPS
+        || namespaces.len() > 128
+    {
+        return Err(crate::XmlSourceError::Unsupported("indexed XPath limits"));
+    }
+    let steps = parse(expression)
+        .map_err(|_| crate::XmlSourceError::Unsupported("indexed XPath expression"))?;
+    if steps.len() > MAX_STEPS {
+        return Err(crate::XmlSourceError::Unsupported("indexed XPath steps"));
+    }
+    let ns = Namespaces {
+        bindings: namespaces,
+        other: None,
+    };
+    for step in &steps {
+        if let Some((prefix, _)) = step.name.split_once(':')
+            && ns.uri(prefix).is_none()
+        {
+            return Err(crate::XmlSourceError::Unsupported(
+                "unbound indexed XPath prefix",
+            ));
+        }
+    }
+    struct Frame {
+        active: [bool; MAX_STEPS],
+        children: [usize; MAX_STEPS],
+    }
+    let bytes = (257 * std::mem::size_of::<Frame>()) as u64;
+    let _memory = scope.reserve_memory(bytes)?;
+    let _metadata = scope.reserve_metadata(bytes)?;
+    let mut frames = Vec::with_capacity(257);
+    frames.push(Frame {
+        active: [false; MAX_STEPS],
+        children: [0; MAX_STEPS],
+    });
+    let mut ancestors = [0usize; MAX_STEPS];
+    let mut first = None;
+    let mut selected = None;
+    {
+        let mut events = document.events();
+        while let Some(event) = events.next_event()? {
+            scope.checkpoint()?;
+            match event.kind {
+                XmlEventKind::Start => {
+                    let name = event
+                        .name
+                        .as_ref()
+                        .ok_or(ProcessingError::InvalidInput("XPath name"))?;
+                    let mut active = [false; MAX_STEPS];
+                    let parent = frames
+                        .last_mut()
+                        .ok_or(ProcessingError::InvalidInput("XPath parent"))?;
+                    for (i, step) in steps.iter().enumerate() {
+                        let (uri, local) = match step.name.split_once(':') {
+                            Some((prefix, local)) => (ns.uri(prefix), local),
+                            None => (None, step.name),
+                        };
+                        let matches = name.namespace() == uri && name.local() == local;
+                        if matches {
+                            parent.children[i] = parent.children[i]
+                                .checked_add(1)
+                                .ok_or(ProcessingError::MetadataLimit)?;
+                        }
+                        let context = if i == 0 {
+                            step.axis == Axis::Descendant || event.depth == 0
+                        } else {
+                            match step.axis {
+                                Axis::Child => parent.active[i - 1],
+                                Axis::Descendant => ancestors[i - 1] != 0,
+                            }
+                        };
+                        active[i] = matches
+                            && context
+                            && step.position.is_none_or(|n| n == parent.children[i]);
+                    }
+                    if active[steps.len() - 1] {
+                        if first.is_none() {
+                            first = Some(event.region.offset);
+                        } else if unique {
+                            return Err(crate::XmlSourceError::Unsupported(
+                                "multi-node XPointer location path",
+                            ));
+                        }
+                    }
+                    for (i, on) in active.iter().enumerate() {
+                        if *on {
+                            ancestors[i] += 1;
+                        }
+                    }
+                    frames.push(Frame {
+                        active,
+                        children: [0; MAX_STEPS],
+                    });
+                }
+                XmlEventKind::End => {
+                    if first == Some(event.region.offset) {
+                        selected = Some(event.region);
+                        if !unique {
+                            break;
+                        }
+                    }
+                    let frame = frames
+                        .pop()
+                        .ok_or(ProcessingError::InvalidInput("XPath frame"))?;
+                    for (i, on) in frame.active.iter().enumerate() {
+                        if *on {
+                            ancestors[i] -= 1;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(selected.map(|region| document.indexed_node(region)))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_subset() {
+        let steps = parse("/a/ds:b[2]//c").unwrap();
+        assert_eq!(
+            steps,
+            [
+                Step {
+                    axis: Axis::Child,
+                    name: "a",
+                    position: None
+                },
+                Step {
+                    axis: Axis::Child,
+                    name: "ds:b",
+                    position: Some(2)
+                },
+                Step {
+                    axis: Axis::Descendant,
+                    name: "c",
+                    position: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_everything_else() {
+        for expr in [
+            "",
+            "/",
+            "a",
+            "/a/",
+            "/a[0]",
+            "/a[x]",
+            "/a[1",
+            "/*",
+            "/a/@id",
+            "/a/text()",
+            "/a[@Id='x']",
+            "/a/..",
+            "/a/.",
+            "/a:b:c",
+            "/a | /b",
+            "//",
+            "/a[1][2]",
+        ] {
+            assert!(
+                matches!(parse(expr), Err(XmlError::XPath(_))),
+                "{expr:?} accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn selects_in_document_order() {
+        let xml = "<root><body><data i=\"1\"/></body><body><x><data i=\"2\"/></x></body><data i=\"3\"/></root>";
+        let doc = parse_doc(xml);
+        let doc = &doc;
+        let attr = |expr: &str| {
+            select_first(doc, expr)
+                .unwrap()
+                .map(|n| n.attribute("i").unwrap())
+        };
+        assert_eq!(attr("//data"), Some("1"));
+        assert_eq!(attr("/root/body[2]//data"), Some("2"));
+        assert_eq!(attr("/root/data"), Some("3"));
+        assert_eq!(attr("//x/data[1]"), Some("2"));
+        assert_eq!(attr("/root/body[3]//data"), None);
+        assert_eq!(attr("/body"), None);
+        assert!(select_first(doc, "//root").unwrap().is_some());
+    }
+
+    #[test]
+    fn nested_context_nodes_give_the_earliest_match() {
+        let xml = "<r><a i=\"1\"><x><a i=\"2\"><b i=\"in\"/><c i=\"c2\"/></a></x><b i=\"out\"/><c i=\"c1\"/></a></r>";
+        let doc = parse_doc(xml);
+        let doc = &doc;
+        let attr = |expr: &str| {
+            select_first(doc, expr)
+                .unwrap()
+                .map(|n| n.attribute("i").unwrap())
+        };
+        assert_eq!(attr("//a/b"), Some("in"));
+        assert_eq!(attr("//a/b[1]"), Some("in"));
+        assert_eq!(attr("//a//c"), Some("c2"));
+        assert_eq!(attr("//a//c[1]"), Some("c2"));
+        assert_eq!(attr("/r/a//a//b"), Some("in"));
+    }
+
+    #[test]
+    fn soap_env_prefix_means_the_soap_namespace() {
+        let xml = "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\"><soapenv:Body Id=\"b\"/></soapenv:Envelope>";
+        let doc = parse_doc(xml);
+        let id = |expr: &str| select_first(&doc, expr).unwrap().map(|n| n.attribute("Id"));
+        assert_eq!(id("/SOAP-ENV:Envelope/SOAP-ENV:Body"), Some(Some("b")));
+        assert_eq!(id("//SOAP-ENV:Body"), Some(Some("b")));
+        assert_eq!(id("/soapenv:Envelope/soapenv:Body"), Some(Some("b")));
+        let other = "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"urn:not-soap\"/>";
+        let doc = parse_doc(other);
+        assert!(select_first(&doc, "/SOAP-ENV:Envelope").unwrap().is_none());
+    }
+
+    #[test]
+    fn step_count_is_capped() {
+        let doc = parse_doc("<a/>");
+        let ok = "//a".repeat(MAX_STEPS);
+        assert!(select_first(&doc, &ok).unwrap().is_none());
+        let long = "//a".repeat(MAX_STEPS + 1);
+        assert!(matches!(select_first(&doc, &long), Err(XmlError::XPath(_))));
+    }
+
+    fn parse_doc(xml: &str) -> Document<'_> {
+        crate::parse::parse(xml.as_bytes()).unwrap()
+    }
+}

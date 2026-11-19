@@ -1,0 +1,84 @@
+{
+ "signatures": [
+  {
+   "keyid": "5d7f9b92a07febc3f3740f556219d58b3d0410c89719ddff4a2dd19232cfc146",
+   "sig": "e815ca6d6eecc2059f3d4e093e49b0dbb4baaa06cbb4172e2e166da8ad0395e0db62af56f8f66098876256441ffd7c4b1bb9761ea033da59c8ea0f54eff6fc0d"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "delegations": {
+   "keys": {
+    "6e01e58674412b169206c31ef4fea0eb5e8d372a6c8967de1be4df182ba35ee3": {
+     "keytype": "ed25519",
+     "keyval": {
+      "public": "0ad2e32cace92756017ef8b809bcebab8c8488090933db8a2503fcd5d0bd5739"
+     },
+     "scheme": "ed25519"
+    },
+    "ac88935431a02f15ed08c5ee8abbf961a7a0f99e0db3a40a65e7e994839cf027": {
+     "keytype": "ed25519",
+     "keyval": {
+      "public": "02d5af26e1a239e512e503df8808621b18cbed50d87b09e30891da1713ba8af7"
+     },
+     "scheme": "ed25519"
+    },
+    "bdd02e810fe597a60d5112bc540aac50c5f0f209934bdaef282a69338525f4f6": {
+     "keytype": "ed25519",
+     "keyval": {
+      "public": "58eb0ca827ef6dc5578387655abd425c5241f9346112dbc4490ea3f96457e905"
+     },
+     "scheme": "ed25519"
+    }
+   },
+   "roles": [
+    {
+     "keyids": [
+      "6e01e58674412b169206c31ef4fea0eb5e8d372a6c8967de1be4df182ba35ee3"
+     ],
+     "name": "pub-alpha",
+     "paths": [
+      "plugins/alpha/*/*"
+     ],
+     "terminating": true,
+     "threshold": 1
+    },
+    {
+     "keyids": [
+      "ac88935431a02f15ed08c5ee8abbf961a7a0f99e0db3a40a65e7e994839cf027",
+      "bdd02e810fe597a60d5112bc540aac50c5f0f209934bdaef282a69338525f4f6"
+     ],
+     "name": "pub-beta",
+     "paths": [
+      "plugins/beta/*/*"
+     ],
+     "terminating": true,
+     "threshold": 2
+    }
+   ]
+  },
+  "expires": "2026-12-15T00:00:00Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "indexes/beta.json": {
+    "hashes": {
+     "sha256": "7cf966dccb1a46f60e6150ac7472fd1f9aacc475b13b63cfe2913cf018f7935f"
+    },
+    "length": 1003
+   },
+   "indexes/stable.json": {
+    "hashes": {
+     "sha256": "4d6db83f027ece1d378930dbe36b31f01250194905a562d75d14fdb982e41dff"
+    },
+    "length": 1005
+   },
+   "publishers.json": {
+    "hashes": {
+     "sha256": "e9de233368f7b8fba250fb573648c748a750c3d009f767725e0e57588ef4a6af"
+    },
+    "length": 560
+   }
+  },
+  "version": 1
+ }
+}

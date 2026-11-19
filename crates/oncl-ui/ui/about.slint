@@ -1,0 +1,175 @@
+// The About window: the program, its licence and Slint's (AboutSlint); the bundles and
+// modules pages see; the third-party licences.
+
+import { AboutSlint, Button, StandardListView, TabWidget, TextEdit } from "std-widgets.slint";
+import { ActionBar, DialogScroll, EscapeScope, Hint, LinkButton, Metrics, NameText, Subheading } from "common.slint";
+
+export component AboutWindow inherits Window {
+    title: @tr("About OpenNCALayer");
+    min-width: Metrics.wide-min-width;
+    min-height: Metrics.wide-min-height;
+    preferred-width: 640px;
+    preferred-height: 480px;
+
+    // 0: the program, 1: the modules, 2: the third-party licences.
+    in-out property <int> tab;
+    in property <string> version;
+    in property <string> commit;
+    in property <string> repository;
+    // The project's chat.
+    in property <string> chat;
+    // `getBundles`: `symname version` per line.
+    in property <[StandardListViewItem]> bundles;
+    // The modules of the daemon's registry.
+    in property <[StandardListViewItem]> modules;
+    // The third-party crates, `name version` each.
+    in property <[StandardListViewItem]> crates;
+    in-out property <int> selected-crate: -1;
+    // The chosen crate's licence and texts.
+    in property <string> crate-license;
+    in property <string> crate-texts;
+    // The button is inside the window, whatever the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    callback crate-chosen(int);
+    callback open-repository();
+    callback open-chat();
+    callback dismiss();
+
+    // Escape works from the first moment: the focus starts here, and Tab goes on from it.
+    forward-focus: keys;
+    keys := EscapeScope {
+        escape => {
+            root.dismiss();
+        }
+        VerticalLayout {
+            padding: Metrics.pad;
+            spacing: Metrics.gap;
+            TabWidget {
+                current-index <=> root.tab;
+                Tab {
+                    title: "OpenNCALayer";
+                    VerticalLayout {
+                        DialogScroll {
+                            Text {
+                                text: "OpenNCALayer";
+                                font-size: 20px;
+                                font-weight: 700;
+                            }
+
+                            Text {
+                                text: @tr("Version {} (commit {})", root.version, root.commit);
+                                wrap: word-wrap;
+                            }
+
+                            Text {
+                                text: "Copyright 2026 Aryn Yklas";
+                            }
+
+                            Text {
+                                text: @tr("Licensed under the Apache License, Version 2.0.");
+                                wrap: word-wrap;
+                            }
+
+                            // The keyboard reaches them (Tab, then Enter or Space), not the mouse only.
+                            HorizontalLayout {
+                                alignment: start;
+                                LinkButton {
+                                    text: root.repository;
+                                    clicked => {
+                                        root.open-repository();
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: start;
+                                LinkButton {
+                                    text: root.chat;
+                                    clicked => {
+                                        root.open-chat();
+                                    }
+                                }
+                            }
+
+                            AboutSlint { }
+                        }
+                    }
+                }
+
+                Tab {
+                    title: @tr("Modules");
+                    VerticalLayout {
+                        DialogScroll {
+                            Subheading {
+                                text: @tr("Bundles (getBundles)");
+                            }
+
+                            StandardListView {
+                                min-height: 120px;
+                                model: root.bundles;
+                                accessible-label: @tr("Bundles (getBundles)");
+                            }
+
+                            Subheading {
+                                text: @tr("Modules of the daemon");
+                            }
+
+                            StandardListView {
+                                min-height: 120px;
+                                model: root.modules;
+                                accessible-label: @tr("Modules of the daemon");
+                            }
+
+                            Hint {
+                                text: @tr("Plugins are installed, turned off and removed in the Plugins window of the tray menu.");
+                            }
+                        }
+                    }
+                }
+
+                Tab {
+                    title: @tr("Third-party licences");
+                    HorizontalLayout {
+                        spacing: Metrics.gap;
+                        padding: Metrics.gap;
+                        StandardListView {
+                            width: 200px;
+                            model: root.crates;
+                            current-item <=> root.selected-crate;
+                            accessible-label: @tr("Third-party licences");
+                            current-item-changed(i) => {
+                                root.crate-chosen(i);
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: Metrics.gap;
+                            Text {
+                                text: root.crate-license;
+                                wrap: word-wrap;
+                            }
+
+                            TextEdit {
+                                read-only: true;
+                                wrap: word-wrap;
+                                text: root.crate-texts;
+                                accessible-label: @tr("Third-party licences");
+                            }
+                        }
+                    }
+                }
+            }
+
+            actions := ActionBar {
+                Button {
+                    text: @tr("Close");
+                    primary: true;
+                    clicked => {
+                        root.dismiss();
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,33 @@
+{
+  "publishers": [
+    {
+      "bundles": [],
+      "display": {
+        "en": "alpha",
+        "kk": "alpha",
+        "ru": "alpha"
+      },
+      "id_prefix": "kz.alpha.",
+      "modules": [
+        "kz.alpha.Module"
+      ],
+      "name": "alpha",
+      "state": "active"
+    },
+    {
+      "bundles": [],
+      "display": {
+        "en": "beta",
+        "kk": "beta",
+        "ru": "beta"
+      },
+      "id_prefix": "kz.beta.",
+      "modules": [
+        "kz.beta.Module"
+      ],
+      "name": "beta",
+      "state": "active"
+    }
+  ],
+  "schema": 1
+}

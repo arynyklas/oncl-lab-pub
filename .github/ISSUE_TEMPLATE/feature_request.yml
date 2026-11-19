@@ -1,0 +1,26 @@
+name: Предложение
+description: Чего не хватает или что можно улучшить
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какая задача не решается
+      description: Что вы хотите сделать и почему сейчас не получается.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Как это могло бы работать
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Чем обходитесь сейчас
+  - type: textarea
+    id: context
+    attributes:
+      label: Дополнительно
+      description: Ссылки, примеры. Ключи и пароли не прикладывайте.

@@ -1,0 +1,18 @@
+{
+  "name": "threshold-not-met",
+  "attack": "2.root.json sets the root role to threshold 2 over {root-a, root-b} and has one signature",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "root",
+  "error_class": "UnsignedMetadataError: the new root does not meet its own root threshold (1 of 2)",
+  "changed_files_vs_valid": [
+    "metadata/2.root.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "UnsignedMetadataError: root was signed by 1/2 keys",
+    "diverges_from_contract": false
+  }
+}

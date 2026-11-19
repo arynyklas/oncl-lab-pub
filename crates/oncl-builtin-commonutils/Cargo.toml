@@ -1,0 +1,20 @@
+[package]
+name = "oncl-builtin-commonutils"
+description = "The kz.gov.pki.knca.commonUtils module of OpenNCALayer as a built-in WebAssembly module: key details, XML and CAdES signatures of data or page files with the user's key, time-stamps and the file chooser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# `cdylib`: the module the core embeds (wasm32); `rlib`: its name and unit tests on the host.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Base64 of the signatures in the replies.
+base64.workspace = true
+# The replies as the original's beans serialize (org.json, Java's `HashMap` order) and the
+# shared reflective dispatcher of `commonUtils` (`legacy`).
+oncl-pdk.workspace = true

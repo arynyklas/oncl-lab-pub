@@ -1,0 +1,292 @@
+// The storage dialog: storage, then the key store file and its password, or the reader of
+// a hardware token and its PIN.
+
+import { AboutSlint, Button, CheckBox, ComboBox, HorizontalBox, LineEdit, Palette, VerticalBox } from "std-widgets.slint";
+import { ActionBar, DialogScroll, EscapeScope, NameText, StatusArea, Tone } from "common.slint";
+
+// A storage in the list.
+export struct StorageRow {
+    label: string,
+    // Unsupported storages are greyed out and cannot be picked.
+    supported: bool,
+    // A hardware token: it is opened in a reader, with a PIN.
+    token: bool,
+}
+
+export component StorageDialog inherits Window {
+    title: "OpenNCALayer";
+    always-on-top: true;
+    min-width: 480px;
+    forward-focus: password-input;
+
+    // The requesting page's origin.
+    in property <string> origin;
+    // Authentication rather than signing.
+    in property <bool> authenticate;
+    // Handing the key's certificate details to the page: nothing is signed.
+    in property <bool> key-info;
+    // A line about the request, e.g. the file to be signed; empty for none.
+    in property <string> detail;
+    in property <[StorageRow]> storages;
+    // Index of the chosen storage, -1 for none.
+    in-out property <int> selected: -1;
+    in-out property <string> path;
+    in-out property <string> password;
+    // Why the previous answer could not be opened.
+    in property <string> error;
+    // The readers holding a token of the chosen token storage.
+    in property <[string]> readers;
+    // Index of the chosen reader, -1 for none.
+    in-out property <int> reader-index: -1;
+    // Why no reader is listed, or that the readers are being searched for; empty otherwise.
+    in property <string> reader-note;
+    // The readers are being searched for: «Refresh» waits.
+    in property <bool> scanning;
+
+    // The buttons are inside the window, whatever the text and the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    // How tall the origin line is, for the tests.
+    out property <length> origin-lines: origin-line.height;
+
+    callback browse();
+    callback open();
+    callback cancel();
+    // The storage of row `i` was chosen.
+    callback storage-chosen(int);
+    // Search the readers again.
+    callback refresh();
+
+    private property <bool> is-token: root.selected >= 0 && root.selected < root.storages.length && root.storages[root.selected].token;
+    private property <bool> can-open: root.selected >= 0 && (root.is-token ? root.reader-index >= 0 && root.reader-index < root.readers.length : !root.path.is-empty);
+
+    EscapeScope {
+        escape => {
+            root.cancel();
+        }
+    VerticalBox {
+        HorizontalLayout {
+            spacing: 8px;
+            origin-line := NameText {
+                text: @tr("Request from: {}", root.origin);
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            Button {
+                text: "ⓘ";
+                clicked => {
+                    about.show();
+                }
+            }
+        }
+
+        Text {
+            text: root.key-info ? @tr("Action: key information") : root.authenticate ? @tr("Action: authentication") : @tr("Action: signing");
+            font-weight: 700;
+        }
+
+        if !root.detail.is-empty: DialogScroll {
+            vertical-stretch: 0;
+            max-height: 80px;
+            Text {
+                text: root.detail;
+                wrap: char-wrap;
+            }
+        }
+
+        Text {
+            text: @tr("Key storage");
+        }
+
+        VerticalLayout {
+            for row[i] in root.storages: Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                border-width: row-focus.has-focus ? 2px : 0px;
+                border-color: Palette.accent-background;
+                background: i == root.selected ? Palette.selection-background : transparent;
+                accessible-role: list-item;
+                accessible-label: row.label;
+                accessible-enabled: row.supported;
+                accessible-item-selectable: row.supported;
+                accessible-item-selected: i == root.selected;
+                accessible-item-index: i;
+                accessible-item-count: root.storages.length;
+                accessible-action-default => {
+                    if (row.supported) {
+                        root.selected = i;
+                        root.storage-chosen(i);
+                    }
+                }
+                // The keyboard reaches the row (Tab) and chooses it (Enter or Space); a row
+                // that is not supported is skipped.
+                row-focus := FocusScope {
+                    enabled: row.supported;
+                    key-pressed(event) => {
+                        if event.text == Key.Return || event.text == " " {
+                            root.selected = i;
+                            root.storage-chosen(i);
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+
+                TouchArea {
+                    enabled: row.supported;
+                    mouse-cursor: row.supported ? pointer : default;
+                    clicked => {
+                        root.selected = i;
+                        root.storage-chosen(i);
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    Text {
+                        text: row.label;
+                        vertical-alignment: center;
+                        color: !row.supported ? Tone.quiet() : i == root.selected ? Palette.selection-foreground : Palette.foreground;
+                    }
+
+                    if !row.supported: Text {
+                        text: @tr("not supported yet");
+                        vertical-alignment: center;
+                        font-italic: true;
+                        color: Tone.quiet();
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                    }
+                }
+            }
+        }
+
+        if !root.is-token: Text {
+            text: @tr("Key store file");
+        }
+
+        if !root.is-token: HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                text <=> root.path;
+                accessible-label: @tr("Key store file");
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: @tr("Browse…");
+                clicked => {
+                    root.browse();
+                }
+            }
+        }
+
+        if root.is-token: Text {
+            text: @tr("Reader");
+        }
+
+        if root.is-token: HorizontalLayout {
+            spacing: 8px;
+            ComboBox {
+                horizontal-stretch: 1;
+                enabled: root.readers.length > 0;
+                model: root.readers;
+                accessible-label: @tr("Reader");
+                current-index <=> root.reader-index;
+            }
+
+            Button {
+                text: @tr("Refresh");
+                enabled: !root.scanning;
+                clicked => {
+                    root.refresh();
+                }
+            }
+        }
+
+        if root.is-token && !root.reader-note.is-empty: Text {
+            text: root.reader-note;
+            wrap: word-wrap;
+        }
+
+        if root.is-token: Text {
+            text: @tr("Token support is experimental: checked on an emulator only");
+            wrap: word-wrap;
+            font-italic: true;
+            color: Tone.quiet();
+        }
+
+        Text {
+            text: root.is-token ? @tr("PIN code") : @tr("Password");
+        }
+
+        password-input := LineEdit {
+            text <=> root.password;
+            accessible-label: root.is-token ? @tr("PIN code") : @tr("Password");
+            input-type: show-password.checked ? InputType.text : InputType.password;
+            accepted => {
+                if (root.can-open) {
+                    root.open();
+                }
+            }
+        }
+
+        show-password := CheckBox {
+            text: @tr("Show password");
+        }
+
+        if !root.error.is-empty: StatusArea {
+            message: root.error;
+            error: true;
+        }
+
+        actions := ActionBar {
+            Button {
+                text: @tr("Open");
+                primary: true;
+                enabled: root.can-open;
+                clicked => {
+                    root.open();
+                }
+            }
+
+            Button {
+                text: @tr("Cancel");
+                clicked => {
+                    root.cancel();
+                }
+            }
+        }
+    }
+
+    }
+
+    about := PopupWindow {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Palette.background;
+            VerticalBox {
+                AboutSlint { }
+                Rectangle {
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    Button {
+                        text: @tr("Close");
+                        clicked => {
+                            about.close();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

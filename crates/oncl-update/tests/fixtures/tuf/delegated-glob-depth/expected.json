@@ -1,0 +1,32 @@
+{
+  "name": "delegated-glob-depth",
+  "attack": "pub-alpha (plugins/alpha/*/*) lists a target one segment deeper",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": null,
+  "probes": [
+    "plugins/alpha/kz.alpha.signer/1.0.0.onclp",
+    "plugins/beta/kz.beta.tool/2.1.0.onclp",
+    "plugins/alpha/kz.alpha.signer/extra/1.0.0.onclp"
+  ],
+  "contract": {
+    "refresh": "accepted",
+    "roles": {
+      "pub-alpha": "refused: path outside",
+      "pub-beta": "verified"
+    }
+  },
+  "changed_files_vs_delegated_valid": [
+    "metadata/1.snapshot.json",
+    "metadata/2.pub-alpha.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "refresh": "ok",
+    "targets": {
+      "plugins/alpha/kz.alpha.signer/1.0.0.onclp": "found",
+      "plugins/beta/kz.beta.tool/2.1.0.onclp": "found",
+      "plugins/alpha/kz.alpha.signer/extra/1.0.0.onclp": "absent"
+    }
+  }
+}

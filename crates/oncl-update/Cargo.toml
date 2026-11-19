@@ -1,0 +1,50 @@
+[package]
+name = "oncl-update"
+description = "OpenNCALayer's update index: its model, the TUF client that authenticates it, the choice of a version and the updater's state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+keywords = ["update", "tuf", "signature", "release", "ncalayer"]
+categories = ["cryptography"]
+include = ["/src/**", "/build.rs", "/keys/root.json", "/LICENSE", "/NOTICE"]
+
+[features]
+# `tuf::testing`: a TUF repository of synthetic keys, for the tests of the crates that read the
+# index through the client.
+testing = []
+
+[dependencies]
+getrandom.workspace = true
+# `fsutil` (the state file, written atomically) and the `HttpTransport` the index is fetched
+# through.
+oncl-pki.workspace = true
+# Ed25519 for the TUF verifier (`tuf::ed25519`); `oncl-pki` already has it.
+ring.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+# The reason a saved state was reset is logged when it happens.
+tracing.workspace = true
+time = { workspace = true, features = ["serde", "formatting", "parsing"] }
+# The signing keys the repository tools generate are wiped when dropped.
+zeroize.workspace = true
+# `contents_sha256`: the files of a package.
+zip.workspace = true
+
+[build-dependencies]
+# `keys/root.json` is checked at build time with the code of `src/tuf` that reads a root
+# (`canonical`, `keys`, `model`, which need no signature algorithm).
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time = { workspace = true, features = ["parsing"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+time = { workspace = true, features = ["macros"] }

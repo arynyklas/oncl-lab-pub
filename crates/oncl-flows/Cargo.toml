@@ -1,0 +1,51 @@
+[package]
+name = "oncl-flows"
+description = "The windows, key choice, page paths and page PINs the OpenNCALayer core shows for its modules and plugins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+keywords = ["ncalayer", "dialogs", "key-selection", "kazakhstan"]
+categories = ["authentication"]
+include = ["/src/**", "/LICENSE", "/NOTICE"]
+
+[features]
+# `testing`: `ScriptedPrompter` and `MemoryRecentPath` for tests of this crate and its users.
+testing = []
+
+[dependencies]
+der.workspace = true
+oncl-pki.workspace = true
+oncl-token.workspace = true
+time.workspace = true
+tracing.workspace = true
+x509-cert.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# `GetFileType`: page-named files must be disk files, not pipes or devices.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# `testing`: `tsp::MockTsa`, `ocsp::MockOcsp`, `testing::issue_cert`.
+oncl-pki = { path = "../oncl-pki", features = ["testing"] }
+oncl-testkit.workspace = true
+# `emulator`: software tokens in the storage dialog's tests.
+oncl-token = { path = "../oncl-token", features = ["emulator"] }
+tempfile.workspace = true
+time = { workspace = true, features = ["macros"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+# A named pipe server for the test that a chosen network pipe is refused by `GetFileType`.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+] }
+
+[[test]]
+name = "keys"
+required-features = ["testing"]

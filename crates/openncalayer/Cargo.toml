@@ -1,0 +1,109 @@
+[package]
+name = "openncalayer"
+description = "OpenNCALayer daemon: NCALayer-compatible wss/https server on 127.0.0.1 and its command line"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# `e2e-prompter`: with `ONCL_E2E_PROMPTER=<steps.json>` set, `run` answers the signing
+# dialogs from that script and opens no windows (end-to-end tests); with
+# `ONCL_UPDATE_INDEX_BASE` set, the updater and the plugin catalog read the TUF repository there; with
+# `ONCL_E2E_EXTRA_CA=<pem>` set, outbound HTTPS trusts that CA too; `e2e install-plugin`
+# installs a plugin package. Never in releases.
+e2e-prompter = ["oncl-flows/testing", "oncl-pki/extra-roots"]
+# `token-emulator`: with `ONCL_TOKEN_EMULATOR=<config.toml>` set, `run` reads hardware tokens
+# from the emulated readers and cards of that file, with token support on (end-to-end tests).
+# Never in releases.
+token-emulator = ["oncl-token/emulator"]
+
+[dependencies]
+oncl-flows.workspace = true
+# The accessory module's name, which the About window asks for the bundles.
+oncl-builtin-accessory.workspace = true
+# `plugins`: the manual window's registry of the installed plugins
+# (`plugins::manual`); not the pages' modules, which `PluginModules` serves.
+oncl-core = { workspace = true, features = ["plugins"] }
+oncl-desktop.workspace = true
+oncl-ipc.workspace = true
+oncl-pki.workspace = true
+oncl-plugin = { workspace = true, features = ["distribution"] }
+oncl-protocol.workspace = true
+oncl-registry.workspace = true
+oncl-tls.workspace = true
+oncl-ui.workspace = true
+# Hardware tokens and ID cards over the system's smart card service (experimental, off by
+# default).
+oncl-token.workspace = true
+oncl-update.workspace = true
+
+base64.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+# The random spread of the update checks.
+getrandom.workspace = true
+httparse.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
+# `sync`: the bridge's queues; `macros`: `select!` over the bridge and the wss server.
+tokio = { workspace = true, features = ["macros", "sync"] }
+tokio-rustls.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+velopack.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The installer entry finds the data directory by the daemon's rule: one test compares them.
+oncl-winget-setup.workspace = true
+# `TestKey`: the throw-away Apps & Features key of the maintenance end-to-end tests.
+oncl-registry = { workspace = true, features = ["testing"] }
+semver.workspace = true
+# The SDK's CMS validation, which replaced the daemon's own checker, in the end-to-end tests.
+oncl-core.workspace = true
+# An AuthorityInfoAccess extension for the loopback PKI of the Core validation tests.
+der.workspace = true
+x509-cert.workspace = true
+oncl-xml.workspace = true
+# `testing`: `ScriptedPrompter`, `MemoryRecentPath`, `tsp::MockTsa`, `ocsp::MockOcsp`,
+# `crl::MockCrl` and `http::RouteTransport`.
+oncl-flows = { path = "../oncl-flows", features = ["testing"] }
+oncl-pki = { path = "../oncl-pki", features = ["testing"] }
+# A `log` record must reach the log file through the `tracing-log` bridge.
+log.workspace = true
+oncl-testkit.workspace = true
+# `testing`: the TUF repository of synthetic keys the updater's and the catalog's tests read
+# their indexes from.
+oncl-update = { workspace = true, features = ["testing"] }
+# A fake mkcert CA in the renewal tests.
+rcgen.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+time = { workspace = true, features = ["macros"] }
+# The project site's `site/config.toml`, against the daemon's addresses of it.
+toml.workspace = true
+# Velopack packages (zip archives) in the installer's tests.
+zip.workspace = true
+
+[[test]]
+name = "tokens"
+required-features = ["e2e-prompter", "token-emulator"]
+
+[build-dependencies]
+# The built-in modules' WebAssembly, built (or taken from `ONCL_BUILTINS_DIR`) and embedded.
+oncl-builtins-build.workspace = true
+
+[[test]]
+name = "maintenance_e2e"
+required-features = ["e2e-prompter"]
+
+[target.'cfg(windows)'.dev-dependencies]
+# Ending the processes the maintenance end-to-end tests start.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }

@@ -1,0 +1,1071 @@
+//! `settings.json` in the data directory, one JSON object shared by the settings window
+//! ([`Settings`]: `locale`, `autostart`, `proxy`, `updates`, `tokens`, `ui`) and other owners
+//! of single keys (the `recentPath` of the key store dialogs). Every change is a read-modify-
+//! write of the whole object ([`update`]) that keeps the keys it does not change, unknown
+//! ones included.
+//! The file may hold a proxy password: it is written readable by its owner only (mode
+//! `0600` on Unix).
+
+use std::io;
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+
+use oncl_flows::Locale;
+use oncl_pki::fsutil::Access;
+pub use oncl_pki::http::ProxySetting;
+pub use oncl_update::Channel;
+use oncl_update::Version;
+use serde_json::{Map, Value};
+
+use crate::write_file;
+
+const LOCALE: &str = "locale";
+const AUTOSTART: &str = "autostart";
+const PROXY: &str = "proxy";
+const MODE: &str = "mode";
+const URL: &str = "url";
+const UPDATES: &str = "updates";
+const ENABLED: &str = "enabled";
+const CHANNEL: &str = "channel";
+const TOKENS: &str = "tokens";
+const UI: &str = "ui";
+const SCALE: &str = "scale";
+
+/// The settings of the settings window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// The language of the windows and the tray: `ru`, `kk` or `en`; `None` follows the
+    /// system's language ([`Settings::ui_locale`]).
+    pub locale: Option<String>,
+    /// Whether our entry starts OpenNCALayer at login (see [`crate::autostart`]).
+    pub autostart: bool,
+    /// The proxy of the time-stamping, OCSP and CRL requests (`{"mode": "none" | "system" |
+    /// "manual", "url": …}`); none (direct connections) by default, as before the setting
+    /// existed.
+    pub proxy: ProxySetting,
+    /// The self-update (`{"enabled": true, "channel": "stable" | "beta"}`).
+    pub updates: UpdateSettings,
+    /// Hardware tokens and ID cards (`{"enabled": false}`): experimental, off by default.
+    pub tokens: TokenSettings,
+    /// How big the windows and their text are (`{"scale": 150}`): the system's size by
+    /// default.
+    pub ui: UiSettings,
+}
+
+/// How the windows look.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiSettings {
+    /// The size of every window and its text, in steps of the system's scale.
+    pub scale: UiScale,
+}
+
+/// The scale of the windows and their text, relative to the system's: one of the steps the
+/// settings window offers. Windows and the text in them grow together, on top of the
+/// display's own scale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiScale {
+    /// The system's size.
+    #[default]
+    P100,
+    P125,
+    P150,
+    P175,
+    P200,
+}
+
+impl UiScale {
+    /// The steps, smallest first (the order of the settings window's list).
+    pub const ALL: [UiScale; 5] = [
+        UiScale::P100,
+        UiScale::P125,
+        UiScale::P150,
+        UiScale::P175,
+        UiScale::P200,
+    ];
+
+    /// The percentage of the system's scale: 100, 125, 150, 175 or 200.
+    pub fn percent(self) -> u16 {
+        match self {
+            UiScale::P100 => 100,
+            UiScale::P125 => 125,
+            UiScale::P150 => 150,
+            UiScale::P175 => 175,
+            UiScale::P200 => 200,
+        }
+    }
+
+    /// The step of `percent`; `None` for any number that is not one of them.
+    pub fn from_percent(percent: u16) -> Option<UiScale> {
+        UiScale::ALL.into_iter().find(|s| s.percent() == percent)
+    }
+
+    /// The factor the system's scale is multiplied by.
+    pub fn factor(self) -> f32 {
+        f32::from(self.percent()) / 100.0
+    }
+}
+
+/// Whether hardware tokens and ID cards are used.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TokenSettings {
+    /// The storage dialogs and the modules see the tokens plugged in; off by default.
+    pub enabled: bool,
+}
+
+/// Whether OpenNCALayer updates itself, and from which channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UpdateSettings {
+    /// New versions are looked for, downloaded and installed by themselves; on by default.
+    pub enabled: bool,
+    /// The channel of the update index; by default the one of this build's version
+    /// ([`UpdateSettings::default_for`]). A channel saved in the settings stays.
+    pub channel: Channel,
+}
+
+impl UpdateSettings {
+    /// The defaults of a build of `version`: updates on, from
+    /// [`Channel::default_for`]`(version)` (beta for a pre-release, stable for a release).
+    pub fn default_for(version: &Version) -> UpdateSettings {
+        UpdateSettings {
+            enabled: true,
+            channel: Channel::default_for(version),
+        }
+    }
+}
+
+impl Default for UpdateSettings {
+    /// [`UpdateSettings::default_for`] this build's version.
+    fn default() -> Self {
+        let version = Version::parse(env!("CARGO_PKG_VERSION")).expect("the package version");
+        UpdateSettings::default_for(&version)
+    }
+}
+
+impl Settings {
+    /// The settings in the file `path`; the defaults if it does not exist. A key that is
+    /// missing or not understood keeps its default (logged).
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read, or is not a JSON object ([`io::ErrorKind::InvalidData`]).
+    pub fn load(path: &Path) -> io::Result<Settings> {
+        Ok(read(path)?
+            .map(|object| Settings::from_object(&object))
+            .unwrap_or_default())
+    }
+
+    /// Stores the settings in the file `path`, keeping its other keys; see [`update`].
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::InvalidInput`] if a manual proxy URL is not usable
+    /// ([`ProxySetting::validate`]), and nothing is written; otherwise as [`update`].
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        self.proxy
+            .validate()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.message))?;
+        update(path, |object| self.store(object))
+    }
+
+    /// The language to show: [`Settings::locale`] if it is one of ours, otherwise the
+    /// system's if it is one of ours, otherwise Russian.
+    pub fn ui_locale(&self) -> Locale {
+        self.locale
+            .as_deref()
+            .and_then(locale_of)
+            .or_else(system_locale)
+            .unwrap_or(Locale::Ru)
+    }
+
+    fn from_object(object: &Map<String, Value>) -> Settings {
+        let defaults = Settings::default();
+        let ignored = |key: &str| tracing::warn!(key, "settings: value not understood; ignored");
+        let locale = match object.get(LOCALE) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(l)) if locale_code(l) => Some(l.clone()),
+            Some(_) => {
+                ignored(LOCALE);
+                None
+            }
+        };
+        let autostart = match object.get(AUTOSTART) {
+            None => defaults.autostart,
+            Some(Value::Bool(on)) => *on,
+            Some(_) => {
+                ignored(AUTOSTART);
+                defaults.autostart
+            }
+        };
+        let proxy = match object.get(PROXY) {
+            None => defaults.proxy,
+            Some(v) => proxy_of(v).unwrap_or_else(|| {
+                ignored(PROXY);
+                defaults.proxy
+            }),
+        };
+        let updates = match object.get(UPDATES) {
+            None => defaults.updates,
+            Some(v) => updates_of(v).unwrap_or_else(|| {
+                ignored(UPDATES);
+                defaults.updates
+            }),
+        };
+        let tokens = match object.get(TOKENS) {
+            None => defaults.tokens,
+            Some(v) => tokens_of(v).unwrap_or_else(|| {
+                ignored(TOKENS);
+                defaults.tokens
+            }),
+        };
+        let ui = match object.get(UI) {
+            None => defaults.ui,
+            Some(v) => ui_of(v).unwrap_or_else(|| {
+                ignored(UI);
+                defaults.ui
+            }),
+        };
+        Settings {
+            locale,
+            autostart,
+            proxy,
+            updates,
+            tokens,
+            ui,
+        }
+    }
+
+    /// Writes the settings into `object`. Other members of a `proxy` object stay; its `url`
+    /// goes when the mode is not manual, so no proxy password is kept that is not used. The
+    /// `tokens` key is written once support is turned on (absent, it is off), the `ui` key
+    /// once a scale is chosen.
+    fn store(&self, object: &mut Map<String, Value>) {
+        match &self.locale {
+            Some(l) => object.insert(LOCALE.to_owned(), Value::String(l.clone())),
+            None => object.remove(LOCALE),
+        };
+        object.insert(AUTOSTART.to_owned(), Value::Bool(self.autostart));
+        let proxy = object
+            .entry(PROXY)
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !proxy.is_object() {
+            *proxy = Value::Object(Map::new());
+        }
+        if let Value::Object(proxy) = proxy {
+            let mode = match &self.proxy {
+                ProxySetting::None => "none",
+                ProxySetting::System => "system",
+                ProxySetting::Manual(url) => {
+                    proxy.insert(URL.to_owned(), Value::String(url.clone()));
+                    "manual"
+                }
+            };
+            if !matches!(self.proxy, ProxySetting::Manual(_)) {
+                proxy.remove(URL);
+            }
+            proxy.insert(MODE.to_owned(), Value::String(mode.to_owned()));
+        }
+        let updates = object
+            .entry(UPDATES)
+            .or_insert_with(|| Value::Object(Map::new()));
+        if !updates.is_object() {
+            *updates = Value::Object(Map::new());
+        }
+        if let Value::Object(updates) = updates {
+            updates.insert(ENABLED.to_owned(), Value::Bool(self.updates.enabled));
+            updates.insert(
+                CHANNEL.to_owned(),
+                Value::String(self.updates.channel.as_str().to_owned()),
+            );
+        }
+        if self.tokens.enabled || object.contains_key(TOKENS) {
+            let tokens = object
+                .entry(TOKENS)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !tokens.is_object() {
+                *tokens = Value::Object(Map::new());
+            }
+            if let Value::Object(tokens) = tokens {
+                tokens.insert(ENABLED.to_owned(), Value::Bool(self.tokens.enabled));
+            }
+        }
+        // Written once a scale other than the default is chosen, and kept after that, with
+        // every member of the object this build does not know.
+        if self.ui.scale != UiScale::default() || object.contains_key(UI) {
+            let ui = object
+                .entry(UI)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !ui.is_object() {
+                *ui = Value::Object(Map::new());
+            }
+            if let Value::Object(ui) = ui {
+                ui.insert(SCALE.to_owned(), Value::from(self.ui.scale.percent()));
+            }
+        }
+    }
+}
+
+/// Whether `l` is a language code of ours.
+fn locale_code(l: &str) -> bool {
+    ["ru", "kk", "en"].contains(&l)
+}
+
+/// The proxy of a `proxy` object; `None` if it is not one.
+fn proxy_of(v: &Value) -> Option<ProxySetting> {
+    match v.get(MODE)?.as_str()? {
+        "none" => Some(ProxySetting::None),
+        "system" => Some(ProxySetting::System),
+        "manual" => Some(ProxySetting::Manual(v.get(URL)?.as_str()?.to_owned())),
+        _ => None,
+    }
+}
+
+/// The update settings of an `updates` object: each member missing keeps its default; `None`
+/// if it is not an object or a member is not understood.
+fn updates_of(v: &Value) -> Option<UpdateSettings> {
+    let defaults = UpdateSettings::default();
+    let enabled = match v.as_object()?.get(ENABLED) {
+        None => defaults.enabled,
+        Some(on) => on.as_bool()?,
+    };
+    let channel = match v.get(CHANNEL) {
+        None => defaults.channel,
+        Some(name) => {
+            let name = name.as_str()?;
+            Channel::ALL.into_iter().find(|c| c.as_str() == name)?
+        }
+    };
+    Some(UpdateSettings { enabled, channel })
+}
+
+/// The token settings of a `tokens` object: `enabled` missing keeps its default; `None` if it
+/// is not an object or `enabled` is not a boolean.
+fn tokens_of(v: &Value) -> Option<TokenSettings> {
+    let enabled = match v.as_object()?.get(ENABLED) {
+        None => TokenSettings::default().enabled,
+        Some(on) => on.as_bool()?,
+    };
+    Some(TokenSettings { enabled })
+}
+
+/// The settings of a `ui` object: a `scale` missing keeps its default; `None` if it is not an
+/// object or the scale is not one of [`UiScale::ALL`]'s percentages.
+fn ui_of(v: &Value) -> Option<UiSettings> {
+    let scale = match v.as_object()?.get(SCALE) {
+        None => UiScale::default(),
+        Some(percent) => UiScale::from_percent(u16::try_from(percent.as_u64()?).ok()?)?,
+    };
+    Some(UiSettings { scale })
+}
+
+/// Our language of a locale name such as `ru`, `kk_KZ.UTF-8` or `en-US`; `None` for any
+/// other language.
+fn locale_of(name: &str) -> Option<Locale> {
+    let language = name
+        .split(['_', '-', '.', '@'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    match language.as_str() {
+        "ru" => Some(Locale::Ru),
+        "kk" => Some(Locale::Kk),
+        "en" => Some(Locale::En),
+        _ => None,
+    }
+}
+
+/// The system's display language, if it is one of ours.
+#[cfg(windows)]
+fn system_locale() -> Option<Locale> {
+    use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+
+    // SAFETY: no arguments; returns a LANGID.
+    let langid = unsafe { GetUserDefaultUILanguage() };
+    // The primary language: LANG_RUSSIAN, LANG_KAZAK, LANG_ENGLISH.
+    match langid & 0x3ff {
+        0x19 => Some(Locale::Ru),
+        0x3f => Some(Locale::Kk),
+        0x09 => Some(Locale::En),
+        _ => None,
+    }
+}
+
+/// The system's language, if it is one of ours: the first of `LC_ALL`, `LC_MESSAGES` and
+/// `LANG` that is set; on macOS, where applications started from the Finder have none of
+/// them, otherwise the `AppleLocale` preference.
+#[cfg(unix)]
+fn system_locale() -> Option<Locale> {
+    let from_env = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()));
+    match from_env {
+        Some(name) => locale_of(&name),
+        None => apple_locale().as_deref().and_then(locale_of),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apple_locale() -> Option<String> {
+    let out = std::process::Command::new("defaults")
+        .args(["read", "-g", "AppleLocale"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn apple_locale() -> Option<String> {
+    None
+}
+
+/// Serializes the read-modify-write cycles of [`update`] within the process.
+static UPDATE: Mutex<()> = Mutex::new(());
+
+/// The settings object in the file `path`; `Ok(None)` if the file does not exist.
+///
+/// # Errors
+///
+/// The file cannot be read, or is not a JSON object ([`io::ErrorKind::InvalidData`]).
+pub fn read(path: &Path) -> io::Result<Option<Map<String, Value>>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(Value::Object(object)) => Ok(Some(object)),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a JSON object",
+        )),
+        Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+    }
+}
+
+/// Applies `change` to the settings object in the file `path` and writes it back through a
+/// temporary file renamed into place, readable by its owner only; the file and its
+/// directory are created if missing. A file that is not a JSON object is replaced (logged).
+/// Changes within the process never interleave, so none is lost.
+///
+/// # Errors
+///
+/// The file cannot be read (other than missing or not a JSON object) or written.
+pub fn update(path: &Path, change: impl FnOnce(&mut Map<String, Value>)) -> io::Result<()> {
+    let _guard = UPDATE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut object = match read(path) {
+        Ok(object) => object.unwrap_or_default(),
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+            tracing::warn!(path = %path.display(), error = %e, "settings are broken; rewriting");
+            Map::new()
+        }
+        Err(e) => return Err(e),
+    };
+    change(&mut object);
+    let json = serde_json::to_vec_pretty(&object).map_err(io::Error::other)?;
+    write_file(path, &json, Access::Private)
+}
+
+/// Records in the file `path` whether our autostart is on ([`Settings::autostart`]), as the
+/// settings window saves it, without writing any other key ([`update`]).
+///
+/// # Errors
+///
+/// As [`update`].
+pub fn set_autostart(path: &Path, on: bool) -> io::Result<()> {
+    update(path, |object| {
+        object.insert(AUTOSTART.to_owned(), Value::Bool(on));
+    })
+}
+
+/// The most recent paths kept.
+pub const RECENT_FILES: usize = 10;
+/// The most favourite certificates kept.
+pub const FAVORITES: usize = 20;
+
+const RECENT_FILES_KEY: &str = "recentFiles";
+const RECENT_STORES_KEY: &str = "recentKeyStores";
+const FAVORITES_KEY: &str = "favoriteCertificates";
+
+/// What the signing window remembers for convenience: paths of recent documents and key
+/// stores, and certificates the user marked, each by the SHA-256 of its DER with a label.
+/// No password, PIN, key or document byte is ever part of it; a path or a certificate is
+/// checked again when used, the entry proves nothing about the file or the certificate.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Remembered {
+    /// Documents, most recent first.
+    pub files: Vec<String>,
+    /// Key store files, most recent first (kept apart from documents: a key store is never a
+    /// document to sign).
+    pub key_stores: Vec<String>,
+    /// `(sha256 hex of the certificate, label)`, in the order they were marked.
+    pub favorites: Vec<(String, String)>,
+}
+
+impl Remembered {
+    /// The remembered entries of the settings file `path`; an entry not understood is
+    /// dropped, nothing is invented.
+    ///
+    /// # Errors
+    ///
+    /// As [`read`].
+    pub fn load(path: &Path) -> io::Result<Remembered> {
+        Ok(read(path)?
+            .map(|o| Remembered::from_object(&o))
+            .unwrap_or_default())
+    }
+
+    fn from_object(object: &Map<String, Value>) -> Remembered {
+        let strings = |key: &str| -> Vec<String> {
+            object
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .take(RECENT_FILES)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let files = strings(RECENT_FILES_KEY);
+        let key_stores = strings(RECENT_STORES_KEY);
+        let favorites = object
+            .get(FAVORITES_KEY)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| {
+                        let fingerprint = v.get("sha256")?.as_str()?;
+                        let valid = fingerprint.len() == 64
+                            && fingerprint.bytes().all(|b| b.is_ascii_hexdigit());
+                        let label = v.get("label")?.as_str()?;
+                        valid.then(|| (fingerprint.to_ascii_lowercase(), label.to_owned()))
+                    })
+                    .take(FAVORITES)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Remembered {
+            files,
+            key_stores,
+            favorites,
+        }
+    }
+
+    fn store(&self, object: &mut Map<String, Value>) {
+        if self.files.is_empty() {
+            object.remove(RECENT_FILES_KEY);
+        } else {
+            object.insert(
+                RECENT_FILES_KEY.to_owned(),
+                Value::Array(self.files.iter().cloned().map(Value::String).collect()),
+            );
+        }
+        if self.key_stores.is_empty() {
+            object.remove(RECENT_STORES_KEY);
+        } else {
+            object.insert(
+                RECENT_STORES_KEY.to_owned(),
+                Value::Array(self.key_stores.iter().cloned().map(Value::String).collect()),
+            );
+        }
+        if self.favorites.is_empty() {
+            object.remove(FAVORITES_KEY);
+        } else {
+            object.insert(
+                FAVORITES_KEY.to_owned(),
+                Value::Array(
+                    self.favorites
+                        .iter()
+                        .map(|(sha256, label)| {
+                            serde_json::json!({ "sha256": sha256, "label": label })
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    /// Puts `file` first, once, and keeps [`RECENT_FILES`].
+    pub fn remember_file(&mut self, file: &str) {
+        self.files.retain(|f| f != file);
+        self.files.insert(0, file.to_owned());
+        self.files.truncate(RECENT_FILES);
+    }
+
+    /// Puts the key store `file` first, once, and keeps [`RECENT_FILES`].
+    pub fn remember_key_store(&mut self, file: &str) {
+        self.key_stores.retain(|f| f != file);
+        self.key_stores.insert(0, file.to_owned());
+        self.key_stores.truncate(RECENT_FILES);
+    }
+
+    /// Marks the certificate `sha256` (hex) with `label`, or unmarks it if it is marked;
+    /// whether it is marked now. A full list refuses a new mark (`None`).
+    pub fn toggle_favorite(&mut self, sha256: &str, label: &str) -> Option<bool> {
+        let sha256 = sha256.to_ascii_lowercase();
+        if let Some(at) = self.favorites.iter().position(|(f, _)| *f == sha256) {
+            self.favorites.remove(at);
+            return Some(false);
+        }
+        if self.favorites.len() >= FAVORITES {
+            return None;
+        }
+        self.favorites.push((sha256, label.to_owned()));
+        Some(true)
+    }
+
+    /// Whether the certificate `sha256` (hex) is marked.
+    pub fn is_favorite(&self, sha256: &str) -> bool {
+        self.favorites
+            .iter()
+            .any(|(f, _)| f.eq_ignore_ascii_case(sha256))
+    }
+
+    /// Writes the entries into the file `path`, keeping every other key ([`update`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`update`].
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        update(path, |object| self.store(object))
+    }
+
+    /// Forgets every remembered file and favourite in the file `path`; other keys stay.
+    ///
+    /// # Errors
+    ///
+    /// As [`update`].
+    pub fn clear(path: &Path) -> io::Result<()> {
+        Remembered::default().save(path)
+    }
+}
+
+#[cfg(test)]
+mod remembered_tests {
+    use super::*;
+
+    #[test]
+    fn remembered_entries_keep_unknown_keys_and_clear_removes_only_themselves() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("settings.json");
+        std::fs::write(&f, r#"{"recentPath":"k.p12","future":{"a":[1]}}"#).unwrap();
+        let mut r = Remembered::load(&f).unwrap();
+        r.remember_key_store("k.p12");
+        r.remember_file("a.pdf");
+        r.remember_file("b.pdf");
+        r.remember_file("a.pdf");
+        assert_eq!(r.toggle_favorite(&"AB".repeat(32), "My key"), Some(true));
+        r.save(&f).unwrap();
+        let back = Remembered::load(&f).unwrap();
+        assert_eq!(back.files, ["a.pdf", "b.pdf"], "documents only");
+        assert_eq!(back.key_stores, ["k.p12"], "key stores apart");
+        assert!(back.is_favorite(&"ab".repeat(32)));
+        let raw: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert_eq!(raw["recentPath"], "k.p12");
+        assert_eq!(raw["future"]["a"][0], 1);
+        Remembered::clear(&f).unwrap();
+        let raw: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        assert!(
+            raw.get(RECENT_FILES_KEY).is_none()
+                && raw.get(RECENT_STORES_KEY).is_none()
+                && raw.get(FAVORITES_KEY).is_none()
+        );
+        assert_eq!(raw["recentPath"], "k.p12");
+        assert_eq!(raw["future"]["a"][0], 1);
+    }
+
+    #[test]
+    fn the_lists_are_bounded_and_garbage_entries_are_dropped() {
+        let mut r = Remembered::default();
+        for i in 0..(RECENT_FILES + 5) {
+            r.remember_file(&format!("f{i}"));
+        }
+        assert_eq!(r.files.len(), RECENT_FILES);
+        assert_eq!(r.files[0], format!("f{}", RECENT_FILES + 4));
+        for i in 0..FAVORITES {
+            assert_eq!(r.toggle_favorite(&format!("{i:064x}"), "x"), Some(true));
+        }
+        assert_eq!(r.toggle_favorite(&"f".repeat(64), "x"), None);
+        let object: Map<String, Value> = serde_json::from_str(
+            r#"{"favoriteCertificates":[{"sha256":"zz","label":"bad"},{"sha256":"00","label":"short"},5],"recentFiles":[1,"ok"]}"#,
+        )
+        .unwrap();
+        let loaded = Remembered::from_object(&object);
+        assert!(loaded.favorites.is_empty());
+        assert_eq!(loaded.files, ["ok"]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+
+    fn file_with(json: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("settings.json");
+        fs::write(&f, json).unwrap();
+        (d, f)
+    }
+
+    /// The channel this build saves by default.
+    fn default_channel() -> &'static str {
+        UpdateSettings::default().channel.as_str()
+    }
+
+    fn on_disk(f: &Path) -> Value {
+        serde_json::from_slice(&fs::read(f).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn round_trip_keeps_unknown_keys() {
+        let (_d, f) = file_with(
+            r#"{"recentPath": "k.p12", "future": {"a": [1, 2]}, "originalAutostart": true,
+                "locale": "kk", "autostart": true,
+                "proxy": {"mode": "manual", "url": "http://p:3128", "extra": 1},
+                "updates": {"enabled": false, "channel": "beta", "later": "x"}}"#,
+        );
+        let mut s = Settings::load(&f).unwrap();
+        assert_eq!(
+            s,
+            Settings {
+                locale: Some("kk".to_owned()),
+                autostart: true,
+                proxy: ProxySetting::Manual("http://p:3128".to_owned()),
+                updates: UpdateSettings {
+                    enabled: false,
+                    channel: Channel::Beta,
+                },
+                tokens: TokenSettings::default(),
+                ui: UiSettings::default(),
+            }
+        );
+        s.save(&f).unwrap();
+        assert_eq!(Settings::load(&f).unwrap(), s);
+
+        s.locale = None;
+        s.autostart = false;
+        s.proxy = ProxySetting::System;
+        s.updates = UpdateSettings::default();
+        s.save(&f).unwrap();
+        assert_eq!(
+            on_disk(&f),
+            json!({
+                "recentPath": "k.p12",
+                "future": {"a": [1, 2]},
+                "originalAutostart": true,
+                "autostart": false,
+                // The manual URL, and a password in it, goes with the manual mode.
+                "proxy": {"mode": "system", "extra": 1},
+                "updates": {"enabled": true, "channel": default_channel(), "later": "x"},
+            })
+        );
+        assert_eq!(Settings::load(&f).unwrap(), s);
+        s.proxy = ProxySetting::None;
+        s.save(&f).unwrap();
+        assert_eq!(Settings::load(&f).unwrap().proxy, ProxySetting::None);
+    }
+
+    #[test]
+    fn tokens_setting_defaults_off_and_keeps_unknown_keys() {
+        // Absent: off, and a save of the defaults does not add the key.
+        let (_d, f) = file_with(r#"{"recentPath": "k.p12"}"#);
+        let mut s = Settings::load(&f).unwrap();
+        assert_eq!(s.tokens, TokenSettings { enabled: false });
+        s.save(&f).unwrap();
+        assert!(on_disk(&f).get("tokens").is_none());
+
+        // Turned on, then off: the key stays with its other members.
+        s.tokens.enabled = true;
+        s.save(&f).unwrap();
+        assert_eq!(on_disk(&f)["tokens"], json!({"enabled": true}));
+        assert!(Settings::load(&f).unwrap().tokens.enabled);
+        let (_d, f) = file_with(r#"{"tokens": {"enabled": true, "later": [1]}}"#);
+        let mut s = Settings::load(&f).unwrap();
+        assert!(s.tokens.enabled);
+        s.tokens.enabled = false;
+        s.save(&f).unwrap();
+        assert_eq!(
+            on_disk(&f)["tokens"],
+            json!({"enabled": false, "later": [1]})
+        );
+        assert!(!Settings::load(&f).unwrap().tokens.enabled);
+
+        // Not understood: off.
+        for tokens in ["true", r#"{"enabled": "yes"}"#, "[]"] {
+            let (_d, f) = file_with(&format!(r#"{{"tokens": {tokens}}}"#));
+            assert_eq!(
+                Settings::load(&f).unwrap().tokens,
+                TokenSettings::default(),
+                "{tokens}"
+            );
+        }
+        let (_d, f) = file_with(r#"{"tokens": {}}"#);
+        assert!(!Settings::load(&f).unwrap().tokens.enabled);
+    }
+
+    #[test]
+    fn ui_scale_defaults_to_100_and_keeps_every_unknown_key() {
+        // Absent: 100%, and a save of the defaults does not add the key.
+        let (_d, f) = file_with(r#"{"recentPath": "k.p12"}"#);
+        let mut s = Settings::load(&f).unwrap();
+        assert_eq!(s.ui.scale, UiScale::P100);
+        s.save(&f).unwrap();
+        assert!(on_disk(&f).get("ui").is_none());
+
+        // Chosen: stored as a plain percentage, the rest of the file untouched.
+        s.ui.scale = UiScale::P150;
+        s.save(&f).unwrap();
+        assert_eq!(on_disk(&f)["ui"], json!({"scale": 150}));
+        assert_eq!(on_disk(&f)["recentPath"], json!("k.p12"));
+        assert_eq!(Settings::load(&f).unwrap().ui.scale, UiScale::P150);
+
+        // Members of `ui` this build does not know survive both a change and a return to 100%.
+        let (_d, f) = file_with(r#"{"ui": {"scale": 200, "density": "tight", "later": [1]}}"#);
+        let mut s = Settings::load(&f).unwrap();
+        assert_eq!(s.ui.scale, UiScale::P200);
+        s.ui.scale = UiScale::P100;
+        s.save(&f).unwrap();
+        assert_eq!(
+            on_disk(&f)["ui"],
+            json!({"scale": 100, "density": "tight", "later": [1]})
+        );
+        assert_eq!(Settings::load(&f).unwrap().ui.scale, UiScale::P100);
+    }
+
+    #[test]
+    fn ui_scale_not_understood_is_100_and_never_fails_the_load() {
+        for ui in [
+            r#"{"scale": 130}"#,
+            r#"{"scale": 0}"#,
+            r#"{"scale": 5000}"#,
+            r#"{"scale": -150}"#,
+            r#"{"scale": 150.5}"#,
+            r#"{"scale": "150"}"#,
+            r#"{"scale": null}"#,
+            "150",
+            "[]",
+            "{}",
+        ] {
+            let (_d, f) = file_with(&format!(r#"{{"autostart": true, "ui": {ui}}}"#));
+            let s = Settings::load(&f).unwrap();
+            assert_eq!(s.ui.scale, UiScale::P100, "{ui}");
+            // The other settings are read as usual.
+            assert!(s.autostart, "{ui}");
+        }
+        // Every step the window offers is understood, and no other number is.
+        for scale in UiScale::ALL {
+            assert_eq!(UiScale::from_percent(scale.percent()), Some(scale));
+        }
+        assert_eq!(UiScale::from_percent(130), None);
+        assert_eq!(UiScale::from_percent(0), None);
+    }
+
+    #[test]
+    fn the_default_channel_follows_the_version() {
+        let v = |s: &str| Version::parse(s).unwrap();
+        for (version, channel) in [
+            ("0.1.0-alpha.1", Channel::Beta),
+            ("0.2.0-beta.3", Channel::Beta),
+            ("1.0.0-rc.1", Channel::Beta),
+            // Releases below 1.0 are releases too.
+            ("0.3.0", Channel::Stable),
+            ("1.2.3", Channel::Stable),
+            // Build metadata is not a pre-release.
+            ("1.2.3+win7", Channel::Stable),
+        ] {
+            assert_eq!(
+                UpdateSettings::default_for(&v(version)),
+                UpdateSettings {
+                    enabled: true,
+                    channel,
+                },
+                "{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_saved_channel_is_kept_whatever_the_build() {
+        // A pre-release build (the default is beta) keeps a saved stable, and a missing
+        // channel takes the build's default.
+        let (_d, f) = file_with(r#"{"updates": {"enabled": true, "channel": "stable"}}"#);
+        assert_eq!(Settings::load(&f).unwrap().updates.channel, Channel::Stable);
+        let (_d, f) = file_with(r#"{"updates": {"channel": "beta"}}"#);
+        assert_eq!(Settings::load(&f).unwrap().updates.channel, Channel::Beta);
+        let (_d, f) = file_with(r#"{"updates": {"enabled": false}}"#);
+        assert_eq!(
+            Settings::load(&f).unwrap().updates,
+            UpdateSettings {
+                enabled: false,
+                ..UpdateSettings::default()
+            }
+        );
+    }
+
+    #[test]
+    fn missing_file_and_keys_are_defaults() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("sub").join("settings.json");
+        assert_eq!(Settings::load(&f).unwrap(), Settings::default());
+        assert_eq!(Settings::default().proxy, ProxySetting::None);
+        let build = Version::parse(env!("CARGO_PKG_VERSION")).unwrap();
+        assert_eq!(
+            Settings::default().updates,
+            UpdateSettings {
+                enabled: true,
+                channel: Channel::default_for(&build),
+            }
+        );
+
+        let s = Settings {
+            locale: Some("en".to_owned()),
+            autostart: true,
+            proxy: ProxySetting::Manual("http://u:p@h:1".to_owned()),
+            ..Settings::default()
+        };
+        s.save(&f).unwrap();
+        assert_eq!(Settings::load(&f).unwrap(), s);
+        assert_eq!(
+            on_disk(&f),
+            json!({"locale": "en", "autostart": true,
+                   "proxy": {"mode": "manual", "url": "http://u:p@h:1"},
+                   "updates": {"enabled": true, "channel": default_channel()}})
+        );
+    }
+
+    #[test]
+    fn unusable_manual_proxy_is_not_saved() {
+        let (_d, f) = file_with(r#"{"recentPath": "k.p12"}"#);
+        for url in ["socks5://127.0.0.1:1080", "https://p:443", "http://[x", ""] {
+            let s = Settings {
+                proxy: ProxySetting::Manual(url.to_owned()),
+                ..Settings::default()
+            };
+            let e = s.save(&f).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidInput, "{url}");
+            assert_eq!(on_disk(&f), json!({"recentPath": "k.p12"}), "{url}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_d, f) = file_with("{}");
+        fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+        Settings::default().save(&f).unwrap();
+        let mode = fs::metadata(&f).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn values_not_understood_are_defaults() {
+        let (_d, f) =
+            file_with(r#"{"locale": "de", "autostart": "yes", "proxy": {"mode": "manual"}}"#);
+        assert_eq!(Settings::load(&f).unwrap(), Settings::default());
+        for proxy in [r#""system""#, r#"{"mode": "pac"}"#, r#"{"mode": 1}"#, "[]"] {
+            let (_d, f) = file_with(&format!(r#"{{"proxy": {proxy}}}"#));
+            assert_eq!(Settings::load(&f).unwrap().proxy, ProxySetting::None);
+        }
+        for updates in [
+            r#""beta""#,
+            r#"{"channel": "nightly"}"#,
+            r#"{"enabled": "no"}"#,
+            r#"{"channel": 1}"#,
+        ] {
+            let (_d, f) = file_with(&format!(r#"{{"updates": {updates}}}"#));
+            assert_eq!(
+                Settings::load(&f).unwrap().updates,
+                UpdateSettings::default(),
+                "{updates}"
+            );
+        }
+        // Members missing keep their defaults.
+        let (_d, f) = file_with(r#"{"updates": {"channel": "beta"}}"#);
+        assert_eq!(
+            Settings::load(&f).unwrap().updates,
+            UpdateSettings {
+                enabled: true,
+                channel: Channel::Beta,
+            }
+        );
+        // A `proxy` or `updates` that is not an object is replaced on save.
+        let (_d, f) = file_with(r#"{"proxy": "system", "updates": false}"#);
+        Settings::default().save(&f).unwrap();
+        assert_eq!(on_disk(&f)["proxy"], json!({"mode": "none"}));
+        assert_eq!(
+            on_disk(&f)["updates"],
+            json!({"enabled": true, "channel": default_channel()})
+        );
+    }
+
+    #[test]
+    fn broken_file_fails_to_load_and_is_replaced_on_save() {
+        for broken in ["[", "[1]", ""] {
+            let (_d, f) = file_with(broken);
+            let e = Settings::load(&f).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{broken:?}");
+            Settings::default().save(&f).unwrap();
+            assert_eq!(Settings::load(&f).unwrap(), Settings::default());
+        }
+    }
+
+    #[test]
+    fn concurrent_updates_of_different_keys_are_all_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("settings.json");
+        std::thread::scope(|scope| {
+            for i in 0..8 {
+                let f = &f;
+                scope.spawn(move || {
+                    update(f, |o| {
+                        o.insert(format!("k{i}"), json!(i));
+                    })
+                    .unwrap()
+                });
+            }
+        });
+        assert_eq!(read(&f).unwrap().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn explicit_locale_wins_and_names_are_parsed() {
+        let with = |l: &str| Settings {
+            locale: Some(l.to_owned()),
+            ..Settings::default()
+        };
+        assert_eq!(with("kk").ui_locale(), Locale::Kk);
+        assert_eq!(with("en").ui_locale(), Locale::En);
+        assert_eq!(with("ru").ui_locale(), Locale::Ru);
+        assert_eq!(locale_of("kk_KZ.UTF-8"), Some(Locale::Kk));
+        assert_eq!(locale_of("ru-RU"), Some(Locale::Ru));
+        assert_eq!(locale_of("EN_us"), Some(Locale::En));
+        assert_eq!(locale_of("en@euro"), Some(Locale::En));
+        assert_eq!(locale_of("de_DE.UTF-8"), None);
+        assert_eq!(locale_of("C"), None);
+        assert_eq!(locale_of(""), None);
+        // A language that is not ours is ignored like no setting.
+        assert_eq!(with("de").ui_locale(), Settings::default().ui_locale());
+    }
+
+    #[test]
+    fn set_autostart_writes_only_that_key() {
+        let (_d, f) = file_with(r#"{"recentPath": "k.p12", "proxy": {"mode": "system"}}"#);
+        set_autostart(&f, true).unwrap();
+        assert_eq!(
+            on_disk(&f),
+            json!({"recentPath": "k.p12", "proxy": {"mode": "system"}, "autostart": true})
+        );
+        // A missing file gets only the key: no default channel is pinned.
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("data").join("settings.json");
+        set_autostart(&missing, false).unwrap();
+        assert_eq!(on_disk(&missing), json!({"autostart": false}));
+    }
+}

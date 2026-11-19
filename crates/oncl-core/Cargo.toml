@@ -1,0 +1,102 @@
+[package]
+name = "oncl-core"
+description = "Typed streaming signing, verification and validation operations with resource policies: the embeddable OpenNCALayer SDK"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# The SDK chain (docs/dev/sdk.md, "Publication readiness") is eligible for the registry so that
+# `cargo package` can verify it as a chain, but nothing in the workspace uploads it: a registry
+# release is a separate decision.
+publish = true
+readme = "README.md"
+keywords = ["cades", "pades", "xmldsig", "gost", "kazakhstan"]
+categories = ["cryptography", "authentication"]
+include = [
+    "/src/**",
+    "/examples/sign_file.rs",
+    "/examples/verify_file.rs",
+    "/examples/custom_transport.rs",
+    "/examples/support/**",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/THIRD-PARTY.txt",
+]
+
+[features]
+# The minimal SDK (`--no-default-features` is the same): CMS/CAdES, hashing, PKI validation,
+# key sources (files, inline PKCS#12/JKS, host-named keys), batches and inspection.
+default = []
+tokens = ["dep:oncl-token"]
+xml = ["dep:oncl-xml"]
+pdf = ["dep:oncl-pdf"]
+jose = ["dep:base64", "dep:serde", "dep:serde_json"]
+plugins = ["xml", "dep:oncl-plugin", "dep:oncl-pdk", "dep:serde", "dep:tracing", "dep:serde_json", "dep:base64", "dep:sha2", "dep:getrandom"]
+# Constructors of approvals and tickets for the tests of guards and of the manual call path (no host builds them
+# this way: Core issues approvals from a confirmed consent summary). Never part of a release.
+testing = ["plugins"]
+# Every SDK feature above. It brings no desktop, updater, UI, server or async runtime;
+# `oncl-plugin`'s `distribution` (package store) stays a separate opt-in of that crate.
+full = ["tokens", "xml", "pdf", "jose", "plugins"]
+
+[dependencies]
+oncl-pki.workspace = true
+oncl-token = { workspace = true, optional = true }
+oncl-xml = { workspace = true, optional = true }
+oncl-pdf = { workspace = true, optional = true }
+oncl-plugin = { workspace = true, optional = true, default-features = false }
+oncl-pdk = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+zeroize.workspace = true
+time.workspace = true
+base64 = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true, features = ["raw_value"] }
+sha2 = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+der.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+oncl-pki = { workspace = true, features = ["testing"] }
+oncl-testkit.workspace = true
+oncl-token = { workspace = true, features = ["emulator"] }
+der.workspace = true
+base64.workspace = true
+time = { workspace = true, features = ["macros"] }
+lopdf.workspace = true
+wat.workspace = true
+tracing-subscriber.workspace = true
+roxmltree.workspace = true
+x509-cert.workspace = true
+# The examples issue a throwaway RSA PKI at run time.
+rcgen.workspace = true
+getrandom.workspace = true
+
+[[test]]
+name = "plugin_access"
+required-features = ["plugins", "tokens"]
+
+[[test]]
+name = "plugin_manual"
+required-features = ["plugins", "tokens"]
+
+[[test]]
+name = "plugin_ticket"
+required-features = ["plugins", "tokens", "testing"]
+
+[[test]]
+name = "plugin_approval"
+required-features = ["plugins", "tokens", "testing"]
+
+# The real wasm of the plugin ports under the manual window's call path; all `#[ignore]`:
+# `cargo xtask plugin-ports-manual` builds the modules and runs them (docs/dev/plugins-manual-tests.md).
+[[test]]
+name = "plugin_ports_manual"
+required-features = ["plugins"]
+
+[[test]]
+name = "key_sources"
+required-features = ["tokens"]
