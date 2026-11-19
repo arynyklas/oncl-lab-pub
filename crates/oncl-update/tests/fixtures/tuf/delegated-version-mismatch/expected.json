@@ -1,0 +1,30 @@
+{
+  "name": "delegated-version-mismatch",
+  "attack": "metadata/1.pub-beta.json (listed as version 1) is version 2",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": null,
+  "probes": [
+    "plugins/alpha/kz.alpha.signer/1.0.0.onclp",
+    "plugins/beta/kz.beta.tool/2.1.0.onclp"
+  ],
+  "contract": {
+    "refresh": "accepted",
+    "roles": {
+      "pub-alpha": "verified",
+      "pub-beta": "refused: version mismatch"
+    }
+  },
+  "changed_files_vs_delegated_valid": [
+    "metadata/1.pub-beta.json",
+    "metadata/1.snapshot.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "refresh": "ok",
+    "targets": {
+      "plugins/alpha/kz.alpha.signer/1.0.0.onclp": "found",
+      "plugins/beta/kz.beta.tool/2.1.0.onclp": "BadVersionNumberError"
+    }
+  }
+}

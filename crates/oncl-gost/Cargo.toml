@@ -1,0 +1,27 @@
+[package]
+name = "oncl-gost"
+description = "GOST R 34.10 signatures, KZ encodings and GOST hashes for OpenNCALayer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+keywords = ["gost", "gost-34-10", "streebog", "kazakhstan", "cryptography"]
+categories = ["cryptography"]
+include = ["/src/**", "/LICENSE", "/NOTICE"]
+
+[dependencies]
+crypto-bigint.workspace = true
+getrandom.workspace = true
+gost94.workspace = true
+streebog.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The public HMAC-Streebog the secret one is checked against.
+hmac.workspace = true
+oncl-testkit.workspace = true
+x509-cert.workspace = true

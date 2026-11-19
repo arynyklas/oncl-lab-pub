@@ -1,0 +1,14 @@
+# The plugin builder images a publisher's release may be built with: the `builder` of
+# `custom.oncl.source` is one of these digests (docs/design/publishers.md, «Сборщик»).
+#
+# Each entry is ghcr.io/arynyklas/oncl-plugin-builder@<digest>, built and attested by
+# .github/workflows/plugin-builder.yml from xtask/assets/plugin-builder/Dockerfile at
+# `commit`. Only the owner adds an entry, at the end, by a pull request; an entry is never
+# changed or removed, so the releases built with it can still be rebuilt. The schema and its
+# rules: xtask/src/publishers/builders.rs.
+#
+# [[builder]]
+# digest = "sha256:<64 lowercase hex>"  # the image's manifest digest
+# commit = "<40 lowercase hex>"         # the commit of this repository it was built from
+# rust = "1.99.1"                       # the Rust release inside
+# added = 2026-11-19                    # when it was listed

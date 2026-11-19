@@ -1,0 +1,64 @@
+name: Test oracles
+description: >-
+  The programs the oracle tests compare the workspace with (docs/dev/development.md, «Что
+  нужно для тестов»): pyHanko, lxml, cryptography, asn1crypto and gostcrypto from
+  xtask/assets/oracle/requirements.txt in a virtualenv (`ONCL_PYHANKO_PYTHON`), and an
+  OpenSSL 3 that has `cms` and `pkcs12 -legacy`: the runner's on Linux, Git for Windows' on
+  Windows (the tests find it themselves), Homebrew's on macOS, which ships LibreSSL
+  (`ONCL_OPENSSL`); and 7-Zip 25.01 or newer (`ONCL_7Z`): the pinned 7-Zip release on Linux
+  and macOS, whose images have older ones only (p7zip 16.02, 7-Zip 17.05), the runner
+  image's own on Windows (Chocolatey's `7zip.install`, in `7-Zip` under `Program Files`,
+  where the test looks).
+  CI sets `ONCL_REQUIRE_ORACLES=1`, so a missing oracle fails the test instead of skipping it.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - name: Oracle environment (pyHanko 0.38.0, OpenSSL)
+      shell: bash
+      run: |
+        python -m venv "$RUNNER_TEMP/oracle"
+        if [ "$RUNNER_OS" = Windows ]; then
+          py="$RUNNER_TEMP/oracle/Scripts/python.exe"
+        else
+          py="$RUNNER_TEMP/oracle/bin/python"
+        fi
+        "$py" -m pip install --require-virtualenv -r xtask/assets/oracle/requirements.txt
+        "$py" -c "import pyhanko, lxml, cryptography, asn1crypto, gostcrypto"
+        echo "ONCL_PYHANKO_PYTHON=$py" >> "$GITHUB_ENV"
+        if [ "$RUNNER_OS" = macOS ]; then
+          brew list openssl@3 > /dev/null 2>&1 || brew install openssl@3
+          echo "ONCL_OPENSSL=$(brew --prefix openssl@3)/bin/openssl" >> "$GITHUB_ENV"
+        fi
+    # 7-Zip 25.01 and newer refuse links out of the output directory (CVE-2025-55188); the
+    # upstream watcher's test `sevenzip_does_not_follow_a_link_out_of_the_output` needs one.
+    - name: 7-Zip 26.06
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        version=26.06
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64)
+            asset=7z2606-linux-x64.tar.xz
+            sum=2b539cf067b2ad48e1baa5093dbaa8818b73542d1222a0ffde9dc5f2922ea62e ;;
+          macOS-ARM64)
+            asset=7z2606-mac.tar.xz
+            sum=b6f17920b4240940461dac8ef4009891881ac44d2a5ead625ede2ec8472185dd ;;
+          *)
+            echo "::error::no pinned 7-Zip for $RUNNER_OS-$RUNNER_ARCH"
+            exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/7zip"
+        mkdir -p "$dir"
+        cd "$dir" || exit 1
+        curl -sSfL --retry 3 -o "$asset" "https://github.com/ip7z/7zip/releases/download/$version/$asset"
+        if command -v sha256sum > /dev/null; then
+          echo "$sum  $asset" | sha256sum -c -
+        else
+          echo "$sum  $asset" | shasum -a 256 -c -
+        fi
+        tar -xJf "$asset" 7zz
+        rm "$asset"
+        echo "ONCL_7Z=$dir/7zz" >> "$GITHUB_ENV"

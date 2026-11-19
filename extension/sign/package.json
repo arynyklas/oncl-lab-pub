@@ -1,0 +1,8 @@
+{
+  "name": "openncalayer-amo-signing",
+  "private": true,
+  "description": "Pins web-ext for the AMO signing step of release.yml; nothing here is shipped.",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=20" },
+  "dependencies": { "web-ext": "10.8.0" }
+}

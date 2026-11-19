@@ -1,0 +1,32 @@
+[package]
+name = "oncl-pack"
+description = "OpenNCALayer's plugin builder: the canonical source archive of a plugin and the reproducible build of its `.onclp` package from it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+# The gzip layer of the source archive: the compressor (and so the archive's bytes) is the one
+# pinned by Cargo.lock, inside the builder image.
+flate2.workspace = true
+# The core version each host function a plugin imports appeared in.
+oncl-pdk.workspace = true
+# Writing the package and the archive.
+oncl-pki.workspace = true
+# The package format and the ABI check the daemon uses.
+oncl-plugin = { workspace = true, features = ["distribution"] }
+serde_json.workspace = true
+# The version of a package's file name.
+semver.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# `tool::GIT`: the archive-from-git tests are skipped without `git`; the example plugin.
+oncl-testkit.workspace = true
+tempfile.workspace = true

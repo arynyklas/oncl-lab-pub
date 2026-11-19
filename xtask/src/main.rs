@@ -1,0 +1,1299 @@
+use std::path::PathBuf;
+
+use anyhow::{Context, bail};
+use clap::{Args, Parser, Subcommand};
+use oncl_update::{Channel, Version};
+use time::OffsetDateTime;
+
+/// OpenNCALayer development tasks.
+#[derive(Parser)]
+#[command(name = "cargo xtask")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Fail on imports from a list of DLLs and functions known to be missing on Windows 7 (a
+    /// deny-list: passing does not show that a program runs there); an import from an
+    /// app-local DLL next to the executable passes if that DLL exports it.
+    CheckImports {
+        #[arg(required = true)]
+        exes: Vec<PathBuf>,
+    },
+    /// Fail on an ELF file that needs a glibc newer than 2.28 (the floor of the Linux
+    /// packages) or a private glibc symbol; prints what each needs.
+    CheckElf {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// Browser extension tasks.
+    Ext {
+        #[command(subcommand)]
+        command: ExtCommand,
+    },
+    /// Browser e2e of the extension over native messaging (Linux only).
+    ExtE2e {
+        /// Browsers to run.
+        #[arg(long, value_enum, default_value_t = xtask::e2e::Selection::All)]
+        browser: xtask::e2e::Selection,
+        /// Download Chrome for Testing, Firefox, Firefox ESR 115 and their drivers into
+        /// `target/browsers/` instead of taking them from ONCL_CHROME, ONCL_CHROMEDRIVER,
+        /// ONCL_FIREFOX, ONCL_FIREFOX_ESR and ONCL_GECKODRIVER.
+        #[arg(long)]
+        download: bool,
+    },
+    /// Download pinned NCANode test fixtures into `target/fixtures/ncanode/`.
+    FetchFixtures,
+    /// Generate the deterministic synthetic PKI in `fixtures/synthetic/`.
+    GenFixtures {
+        /// Regenerate in memory and fail if the committed files differ.
+        #[arg(long)]
+        check: bool,
+    },
+    /// Sign with the synthetic RSA key and check the CMS with `openssl cms -verify`.
+    InteropOpenssl,
+    /// Fail if the `testing` feature is enabled in the normal dependency tree of a release
+    /// program (`openncalayer`, `oncl-cli`, `oncl-server`, `oncl-ui`): it would ship the
+    /// `for_tests` constructors that forge key-use approvals (docs/dev/sdk.md).
+    CheckReleaseFeatures,
+    /// SDK delivery evidence: dependency closure, packaged-sources consumer smoke, licence
+    /// inventory (docs/dev/sdk.md).
+    Sdk {
+        #[command(subcommand)]
+        command: xtask::sdk_delivery::SdkCommand,
+    },
+    /// Generate the third-party licence texts of the programs for the About window
+    /// (`crates/oncl-ui/assets/THIRD-PARTY.txt`) from the local cargo registry.
+    Licenses {
+        /// Regenerate in memory and fail if the committed file differs.
+        #[arg(long)]
+        check: bool,
+        /// The licences of the plugin ports (`plugins/THIRD-PARTY.txt`) instead.
+        #[arg(long)]
+        plugins: bool,
+    },
+    /// Verify our XMLDSig and CMS signatures with NCANode (Kalkan) in Docker (Linux only).
+    InteropNcanode,
+    /// The independent interop matrix of the platform: every capability family of the pinned
+    /// NCANode OpenAPI, judged by OpenSSL, pyHanko, lxml/cryptography and NCANode (Linux:
+    /// `docs/dev/platform-interop.md`); writes `report.json` and `report.md` into `--out`.
+    PlatformInterop {
+        /// Output directory (reports and the artifacts of every row).
+        #[arg(long, default_value = "target/platform-interop")]
+        out: PathBuf,
+        /// The `oncl` binary to test [default: `cargo build -p oncl-cli`, debug profile].
+        #[arg(long)]
+        oncl: Option<PathBuf>,
+        /// Run only the rows whose id starts with this (repeatable); such a run is not a
+        /// verdict.
+        #[arg(long = "case")]
+        cases: Vec<String>,
+        /// List the rows and exit.
+        #[arg(long)]
+        list: bool,
+        /// Start the loopback PKI, write its paths to `<out>/world.env` and serve until
+        /// stdin closes (to reproduce a row by hand with `oncl`).
+        #[arg(long)]
+        hold_world: bool,
+        /// Directory of the large artifacts [default: `ONCL_INTEROP_SCRATCH`, else under the
+        /// temporary directory]: use a volume with a few GiB free.
+        #[arg(long)]
+        scratch: Option<PathBuf>,
+        /// Size in bytes of the large artifacts of the matrix: just below the 1 GiB
+        /// guarantee, so that `oncl` accepts them (a size at or above it is refused).
+        #[arg(long, default_value_t = xtask::platform_interop::cases::large::DEFAULT_LARGE_BYTES)]
+        large_bytes: u64,
+    },
+    /// Installers and update packages of a release (Velopack's `vpk` on the `PATH`, or
+    /// `$VPK`); every command copies what is published into `--dist`.
+    Package {
+        #[command(subcommand)]
+        command: PackageCommand,
+    },
+    /// The TUF repository that authenticates the update indexes (`tuf/v1`): keys, targets and
+    /// snapshot, the timestamp, roots, offline and published checks.
+    Tuf {
+        #[command(subcommand)]
+        command: xtask::tuf::cli::TufCommand,
+    },
+    /// Third-party plugin publishers: keys, source archives, the reference build, the role
+    /// file of a release, and the checks of a release pull request
+    /// (`docs/dev/publishers.md`).
+    Vendor {
+        #[command(subcommand)]
+        command: xtask::vendor::cli::VendorCommand,
+    },
+    /// Update index tasks (`updates/v1/<channel>.json`).
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
+    },
+    /// Plugin tasks (`.onclp` packages).
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
+    /// Lint the `[[operations]]` of every `plugins/*/plugin.toml` (and the extra paths):
+    /// schema rules via the manifest parser, declared imports against the built module's.
+    /// Exit 1 on errors; a missing module is a warning, an error with `--require-wasm`.
+    PluginOpsCheck {
+        /// Extra `plugin.toml` files or plugin directories.
+        paths: Vec<PathBuf>,
+        /// Where the built modules are [default: target/plugin-build/wasm32-unknown-unknown/release].
+        #[arg(long)]
+        wasm_dir: Option<PathBuf>,
+        /// A missing module is an error.
+        #[arg(long)]
+        require_wasm: bool,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fail when a plugin port's `plugin.toml`, `Cargo.toml` or `src/` changed since the last
+    /// `plugins-*` tag but its version did not (docs/dev/plugin-version-check.md). Without
+    /// such a tag in the checkout: a NOTICE, exit 0.
+    PluginVersionCheck,
+    /// The plugin ports' real wasm under the manual window's call path: builds the modules,
+    /// runs `plugin-ops-check --require-wasm`, then the ignored tests of
+    /// `crates/oncl-core/tests/plugin_ports_manual.rs` (docs/dev/plugins-manual-tests.md).
+    PluginPortsManual {
+        /// The modules' directory [default: target/plugin-build/wasm32-unknown-unknown/release].
+        #[arg(long)]
+        wasm_dir: Option<PathBuf>,
+        /// Use the modules that are already built.
+        #[arg(long)]
+        no_build: bool,
+        /// Only the tests whose names contain one of these (e.g. `rating1c`).
+        filters: Vec<String>,
+    },
+    /// Fail on what must never reach the public repository (docs/dev/release.md,
+    /// «Приватность»): transcript files and headers, paths with a drive letter outside the
+    /// listed test literals, certificates issued by an NCA test CA; with `--denylist`, lines
+    /// matching a private list. Findings are printed as `file:line`, never what matched.
+    Privacy {
+        /// `<base>..<head>`: also what these commits add (the lines a text file gains, new or
+        /// changed binary files) and their messages.
+        /// The empty tree (`4b825dc642cb6eb9a060e54bf8d69288fbee4904`) as base takes the
+        /// whole history.
+        #[arg(long)]
+        range: Option<String>,
+        /// A private list: one entry per line, a case-insensitive substring or
+        /// `re:<regex>`; empty lines and lines starting with `#` are skipped.
+        #[arg(long)]
+        denylist: Option<PathBuf>,
+    },
+    /// The project site (`site/`): build it with the pinned Zola, check a built one.
+    Registry {
+        #[command(subcommand)]
+        command: RegistryCommand,
+    },
+    /// Serve the first card of an emulator configuration to vpcd (vsmartcard's virtual
+    /// reader for pcscd) until the process is stopped: the PC/SC test of CI.
+    TokenEmu {
+        /// The emulator configuration (TOML); key paths are relative to the workspace root.
+        #[arg(long)]
+        config: PathBuf,
+        /// vpcd's address [default: 127.0.0.1:35963].
+        #[arg(long)]
+        vpcd: Option<String>,
+    },
+    /// The watcher of the original NCALayer (`docs/dev/upstream-watch.md`).
+    Upstream {
+        #[command(subcommand)]
+        command: xtask::upstream::cli::UpstreamCommand,
+    },
+    /// The WinGet manifest of a published desktop release (`docs/dev/winget.md`). Nothing
+    /// here submits anything.
+    Winget {
+        #[command(subcommand)]
+        command: xtask::winget::WingetCommand,
+    },
+    /// Build the Windows 7 programs with their app-local DLLs into `<out>/<arch>/`, run the
+    /// import gate on them and, on Windows, start them there. The built-in modules are those
+    /// of `ONCL_BUILTINS_DIR`, else built first into `target/builtins` (`builtins build`).
+    Win7 {
+        /// Architectures to build.
+        #[arg(long, value_enum, default_value_t = xtask::win7::Selection::All)]
+        arch: xtask::win7::Selection,
+        /// Output directory [default: target/win7].
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Cargo's target directory for the build [default: the workspace's `target/`]. CI
+        /// gives it one of its own to cache: the cache of `target/` drops the standard
+        /// library `-Zbuild-std` builds, and every crate then rebuilds.
+        #[arg(long)]
+        target_dir: Option<PathBuf>,
+    },
+    /// The built-in modules' WebAssembly.
+    Builtins {
+        #[command(subcommand)]
+        command: BuiltinsCommand,
+    },
+    /// The acceptance gate of the 1 GiB / 1 GiB profile (docs/dev/platform-acceptance.md):
+    /// generates meaningful XML/WSSE/PDF/byte-stream documents with an independent reference
+    /// generator, runs the real SDK probe, `oncl` and `oncl-server` as separate processes on
+    /// them and measures each process's OS peak memory. Takes hours at the full size.
+    PlatformProof(xtask::platform::ProofArgs),
+    /// Internal to `platform-proof`: the service library over a counting software card.
+    #[command(hide = true)]
+    PlatformTokenHost(xtask::platform::token_host::TokenHostArgs),
+}
+
+#[derive(Subcommand)]
+enum BuiltinsCommand {
+    /// Build the built-in modules into `<out>/<package>/{plugin.toml,plugin.wasm}` with
+    /// `<out>/SHA256SUMS`, as the builds embed them from `ONCL_BUILTINS_DIR`.
+    Build {
+        /// Output directory [default: target/builtins].
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Check that a built program embeds the modules of `<dir>/SHA256SUMS` (its
+    /// `openncalayer builtins`).
+    Check {
+        /// The program.
+        #[arg(long)]
+        bin: PathBuf,
+        /// The modules as built [default: target/builtins].
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegistryCommand {
+    /// Generate the build copy into `<out>/src`, build it into `<out>/public` and check it.
+    Build(Box<RegistryBuild>),
+    /// Check a built site offline: links, fragments, external places and page rules.
+    Check {
+        /// The built site.
+        dir: PathBuf,
+    },
+}
+
+/// The inputs and output of `registry build`.
+#[derive(Args)]
+struct RegistryBuild {
+    /// The ports [default: `plugins/` of the workspace].
+    #[arg(long)]
+    plugins: Option<PathBuf>,
+    /// The update indexes [default: `updates/v1/` of the workspace, if there].
+    #[arg(long)]
+    updates: Option<PathBuf>,
+    /// The project's releases, JSON Lines (`gh api …/releases`).
+    #[arg(long)]
+    releases: Option<PathBuf>,
+    /// A copy of the `upstream` branch's `index.json` and `latest/facts.json`.
+    #[arg(long)]
+    upstream: Option<PathBuf>,
+    /// The publishers' registry [default: `publishers/` of the workspace, if there].
+    #[arg(long)]
+    publishers: Option<PathBuf>,
+    /// The TUF repository with the publishers' roles [default: `tuf/v1/` of the workspace,
+    /// if there].
+    #[arg(long)]
+    tuf: Option<PathBuf>,
+    /// Output directory [default: target/site].
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// The Zola binary [default: the pinned one, downloaded into target/tools].
+    #[arg(long)]
+    zola: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum IndexCommand {
+    /// Append a released version to the channel's index, from the release's downloaded
+    /// assets: sha256 and sizes of its packages, the next `seq`, 30 days of validity.
+    Add {
+        /// `stable` or `beta`.
+        #[arg(long, value_parser = parse_channel)]
+        channel: Channel,
+        /// The release tag, `v<version>`.
+        #[arg(long)]
+        tag: String,
+        /// The downloaded assets of the release.
+        #[arg(long)]
+        release_assets: PathBuf,
+        /// Percentage of installations offered the version.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(0..=100))]
+        rollout: u8,
+        /// The directory of the indexes [default: `updates/v1/` of the workspace].
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Give the channel's index the next `seq`, a new `generated` and 30 days of validity,
+    /// and nothing else.
+    Refresh {
+        /// `stable` or `beta`.
+        #[arg(long, value_parser = parse_channel)]
+        channel: Channel,
+        /// The directory of the indexes [default: `updates/v1/` of the workspace].
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Append plugin packages of a `plugins-YYYYMMDD[.N]` release to the channel's index:
+    /// id, version, modules and hashes come from the packages. A prerelease plugin, or one
+    /// whose port's `registry.toml` does not say `conformance = "confirmed"`, is not added
+    /// to `stable`.
+    AddPlugin {
+        /// `stable` or `beta`.
+        #[arg(long, value_parser = parse_channel)]
+        channel: Channel,
+        /// The release tag, `plugins-YYYYMMDD[.N]`.
+        #[arg(long)]
+        tag: String,
+        /// The `.onclp` packages of the release (several after one flag, or the flag again).
+        #[arg(long = "package", required = true, num_args = 1..)]
+        packages: Vec<PathBuf>,
+        /// Percentage of installations offered the new plugin versions.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(0..=100))]
+        rollout: u8,
+        /// The directory of the indexes [default: `updates/v1/` of the workspace].
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// The ports' directory, read for `stable` only [default: `plugins/` of the
+        /// workspace].
+        #[arg(long)]
+        plugins: Option<PathBuf>,
+    },
+    /// Check the indexes in a directory before publishing: format, validity, asset URLs
+    /// on the project's releases, `seq` growth against the base branch, and that every asset
+    /// answers `HEAD` with 200.
+    Check {
+        /// The directory of the indexes, e.g. `updates/v1`.
+        dir: PathBuf,
+        /// Skip the network checks (`HEAD` of the assets, `vm-smoke`, `conformance`).
+        #[arg(long)]
+        offline: bool,
+        /// The git revision of the base branch.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+        /// No base (a first push, a manual run): schema, expiry and URLs are checked; `seq`
+        /// growth is not.
+        #[arg(long)]
+        no_base: bool,
+        /// Require the `vm-smoke` commit status to be `success` on the tag of every new
+        /// version.
+        #[arg(long, conflicts_with = "offline")]
+        vm_smoke: bool,
+        /// Require the `conformance` commit status to be `success` on the tag of every new
+        /// `stable` version (`beta` is not gated).
+        #[arg(long, conflicts_with = "offline")]
+        conformance: bool,
+    },
+}
+
+fn parse_channel(name: &str) -> Result<Channel, String> {
+    Channel::ALL
+        .into_iter()
+        .find(|c| c.as_str() == name)
+        .ok_or_else(|| format!("{name:?} is not a channel (stable, beta)"))
+}
+
+/// The directory of the indexes: `dir`, or `updates/v1/` of the workspace.
+fn index_dir(dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| oncl_testkit::workspace_root().join(xtask::index::INDEX_DIR))
+}
+
+/// Prints what to do after [`xtask::index::add`] or [`xtask::index::refresh`] wrote an index.
+fn print_written(written: &xtask::index::Written) {
+    println!(
+        "next: cargo xtask tuf update --keys <keys> (signs {} into the TUF targets)",
+        written.path.display()
+    );
+}
+
+/// What every packaging command takes.
+#[derive(clap::Args)]
+struct PackageArgs {
+    /// The version of the release.
+    #[arg(long, value_parser = parse_version)]
+    version: Version,
+    /// Velopack's output: the previous full package for the delta goes here first.
+    #[arg(long, default_value = "packages")]
+    packages: PathBuf,
+    /// Where the published files are copied.
+    #[arg(long, default_value = "dist")]
+    dist: PathBuf,
+}
+
+#[derive(Subcommand)]
+enum PackageCommand {
+    /// `Setup.exe` and the update packages of a Windows flavor (Windows 7 flavors through
+    /// the import gate).
+    Windows {
+        /// `win-x64`, `win-x86`, `win7-x64` or `win7-x86`.
+        #[arg(long)]
+        flavor: String,
+        /// The built programs (with the app-local DLLs for Windows 7).
+        #[arg(long)]
+        bin: PathBuf,
+        #[command(flatten)]
+        args: PackageArgs,
+    },
+    /// The WinGet installer entry of `win-x64` or `win-x86`: the built `oncl-winget-setup`
+    /// carrying the final `Setup.exe` (`openncalayer-<version>-<flavor>-winget-setup.exe`,
+    /// unsigned: sign it after this, then publish those bytes).
+    WingetSetup {
+        /// `win-x64` or `win-x86`.
+        #[arg(long)]
+        flavor: String,
+        /// The built `oncl-winget-setup.exe` (without a payload) of the flavor's target.
+        #[arg(long)]
+        entry: PathBuf,
+        /// The published (and signed, if signing is on) `Setup.exe` of the flavor.
+        #[arg(long)]
+        setup: PathBuf,
+        /// The version of the release.
+        #[arg(long, value_parser = parse_version)]
+        version: Version,
+        /// Where the entry is written.
+        #[arg(long, default_value = "dist")]
+        dist: PathBuf,
+    },
+    /// The universal macOS `.app` as `.zip` and `.pkg`, and the update packages (macOS).
+    Macos {
+        /// The universal programs.
+        #[arg(long)]
+        bin: PathBuf,
+        /// A "Developer ID Installer" identity to sign the `.pkg`.
+        #[arg(long)]
+        install_identity: Option<String>,
+        /// The keychain of the signing identities.
+        #[arg(long)]
+        keychain: Option<PathBuf>,
+        /// A `notarytool` keychain profile: the `.pkg` is notarized and stapled.
+        #[arg(long)]
+        notary_profile: Option<String>,
+        #[command(flatten)]
+        args: PackageArgs,
+    },
+    /// Build the Linux programs and the AppDir in the glibc 2.28 container (Docker), into
+    /// `target/linux-x64/`.
+    LinuxBuild {
+        /// The version of the release.
+        #[arg(long, value_parser = parse_version)]
+        version: Version,
+        /// A Docker volume keeping the toolchain and cargo's files between runs.
+        #[arg(long)]
+        cache_volume: Option<String>,
+    },
+    /// Lay out and check the AppDir (inside the glibc 2.28 container).
+    Appdir {
+        /// The built programs.
+        #[arg(long)]
+        bin: PathBuf,
+        /// The version of the release.
+        #[arg(long, value_parser = parse_version)]
+        version: Version,
+        /// The AppDir to write.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// The AppImage and the update packages from the AppDir, checked (Linux, Docker).
+    Linux {
+        /// The AppDir of `linux-build`.
+        #[arg(long, default_value = "target/linux-x64/OpenNCALayer.AppDir")]
+        appdir: PathBuf,
+        #[command(flatten)]
+        args: PackageArgs,
+    },
+    /// `PKGBUILD`, `.SRCINFO` and the install script of the pacman package `openncalayer-bin`.
+    Arch {
+        /// The version of the release.
+        #[arg(long, value_parser = parse_version)]
+        version: Version,
+        /// The sha256 of the release's Linux archive.
+        #[arg(long)]
+        sha256: String,
+        /// The package release of this version.
+        #[arg(long, default_value_t = 1)]
+        pkgrel: u32,
+        /// Where to write the files.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// The standalone SDK programs as archives of their own, not mixed with the desktop
+    /// packages: `oncl-<version>-<flavor>` (the command line) and
+    /// `oncl-server-<version>-<flavor>` (the HTTP service, whose API stays disabled until
+    /// the operator enables it), `.zip` on Windows and `.tar.gz` elsewhere, each with its
+    /// licences, documentation and, for the server, the example configuration (Linux: the
+    /// Dockerfile and systemd unit). The programs of `--bin` pass the flavor's gate first
+    /// (static CRT, the Windows 7 import deny-list, glibc 2.28, universal macOS); then, on a
+    /// host that can start them, the archives are UNPACKED and the unpacked programs run: hash,
+    /// verify, the disabled server (no listener), a signature through the server enabled on
+    /// loopback, a clean stop. Nothing is signed, uploaded or published.
+    Platform {
+        /// `win-x64`, `win-x86`, `win7-x64`, `win7-x86`, `linux-x64` or `osx`.
+        #[arg(long)]
+        flavor: String,
+        /// The directory of the built `oncl` and `oncl-server` (`.exe` on Windows).
+        #[arg(long)]
+        bin: PathBuf,
+        /// The version of the release: that of the workspace, which the programs print.
+        #[arg(long, value_parser = parse_version)]
+        version: Version,
+        /// Where the archives are copied.
+        #[arg(long, default_value = "dist")]
+        dist: PathBuf,
+        /// Only pack and gate: do not unpack and start the archives.
+        #[arg(long)]
+        no_smoke: bool,
+    },
+    /// Only the behaviour smoke of `platform`, on archives already in `--dist`: they are
+    /// unpacked into a fresh directory and the unpacked programs are started (hash, verify,
+    /// the disabled server without a listener, a signature through the opted-in loopback
+    /// server, a clean stop). Fails when this host cannot start the flavor's programs.
+    PlatformSmoke {
+        /// `win-x64`, `win-x86`, `win7-x64`, `win7-x86`, `linux-x64` or `osx`.
+        #[arg(long)]
+        flavor: String,
+        /// The version of the archives.
+        #[arg(long, value_parser = parse_version)]
+        version: Version,
+        /// The directory of the archives.
+        #[arg(long, default_value = "dist")]
+        dist: PathBuf,
+    },
+    /// Build `oncl` and `oncl-server` for the flavors that need more than `cargo build
+    /// --release -p oncl-cli -p oncl-server`: Windows 7 (the pinned nightly, `-Zbuild-std`,
+    /// static CRT) into `<out>/<arch>/`, Linux in the glibc 2.28 container (Docker) into
+    /// `target/platform/linux-x64/`. With `--dist` the Linux container also runs `platform`
+    /// on them, smoke included. Prints the directory for `platform --bin`.
+    PlatformBuild {
+        /// `win7-x64`, `win7-x86` or `linux-x64`.
+        #[arg(long)]
+        flavor: String,
+        /// Windows 7: the output directory [default: target/platform/win7].
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Windows 7: cargo's target directory for the build.
+        #[arg(long)]
+        target_dir: Option<PathBuf>,
+        /// Linux: the version of the release.
+        #[arg(long, value_parser = parse_version)]
+        version: Option<Version>,
+        /// Linux: a Docker volume keeping the toolchain and cargo's files between runs.
+        #[arg(long)]
+        cache_volume: Option<String>,
+        /// Linux: a directory in the workspace for the archives made inside the container.
+        #[arg(long)]
+        dist: Option<PathBuf>,
+    },
+}
+
+fn parse_version(text: &str) -> Result<Version, String> {
+    Version::parse(text).map_err(|e| format!("{text:?} is not a version: {e}"))
+}
+
+/// Prints the published files.
+fn print_published(files: &[PathBuf]) {
+    for file in files {
+        println!("published: {}", file.display());
+    }
+}
+
+/// `cargo xtask package …`.
+fn package(command: PackageCommand) -> anyhow::Result<()> {
+    use xtask::package::{arch, linux, macos, platform, windows};
+    let root = oncl_testkit::workspace_root();
+    match command {
+        PackageCommand::Windows { flavor, bin, args } => {
+            let flavor = windows::flavor(&flavor)?;
+            print_published(&windows::package(
+                &root,
+                &flavor,
+                &bin,
+                &args.version,
+                &args.packages,
+                &args.dist,
+            )?);
+        }
+        PackageCommand::WingetSetup {
+            flavor,
+            entry,
+            setup,
+            version,
+            dist,
+        } => {
+            let flavor = windows::flavor(&flavor)?;
+            let made = windows::winget_setup(&entry, &setup, &version, &flavor, &dist)?;
+            print_published(&[made]);
+            println!(
+                "the installer entry is not signed: sign it (Authenticode) before it is published"
+            );
+        }
+        PackageCommand::Macos {
+            bin,
+            install_identity,
+            keychain,
+            notary_profile,
+            args,
+        } => {
+            let signing = macos::PkgSigning {
+                identity: install_identity,
+                keychain,
+                notary_profile,
+            };
+            print_published(&macos::package(
+                &root,
+                &bin,
+                &args.version,
+                &args.packages,
+                &args.dist,
+                &signing,
+            )?);
+        }
+        PackageCommand::LinuxBuild {
+            version,
+            cache_volume,
+        } => {
+            let appdir = linux::build_in_container(&root, &version, cache_volume.as_deref())?;
+            println!("{}", appdir.display());
+        }
+        PackageCommand::Appdir { bin, version, out } => linux::appdir(&root, &bin, &version, &out)?,
+        PackageCommand::Linux { appdir, args } => {
+            print_published(&linux::package(
+                &root,
+                &appdir,
+                &args.version,
+                &args.packages,
+                &args.dist,
+            )?);
+        }
+        PackageCommand::Arch {
+            version,
+            sha256,
+            pkgrel,
+            out,
+        } => {
+            for file in arch::Package::new(version, pkgrel, &sha256)?.write(&out)? {
+                println!("{}", file.display());
+            }
+        }
+        PackageCommand::Platform {
+            flavor,
+            bin,
+            version,
+            dist,
+            no_smoke,
+        } => {
+            let flavor = platform::flavor(&flavor)?;
+            print_published(&platform::package(
+                &root, &flavor, &bin, &version, &dist, !no_smoke,
+            )?);
+        }
+        PackageCommand::PlatformSmoke {
+            flavor,
+            version,
+            dist,
+        } => {
+            let flavor = platform::flavor(&flavor)?;
+            anyhow::ensure!(
+                xtask::package::platform_smoke::runnable(&flavor),
+                "this host cannot start {} programs",
+                flavor.name
+            );
+            platform::smoke(&root, &flavor, &version, &dist)?;
+        }
+        PackageCommand::PlatformBuild {
+            flavor,
+            out,
+            target_dir,
+            version,
+            cache_volume,
+            dist,
+        } => {
+            let flavor = platform::flavor(&flavor)?;
+            let dir = match flavor.name {
+                "win7-x64" | "win7-x86" => {
+                    let arch = if flavor.name == "win7-x64" {
+                        xtask::win7::Arch::X64
+                    } else {
+                        xtask::win7::Arch::X86
+                    };
+                    let out = out.unwrap_or_else(|| root.join("target/platform/win7"));
+                    platform::build_win7(&root, arch, &out, target_dir.as_deref())?
+                }
+                "linux-x64" => {
+                    let version = version.context("--version is required for linux-x64")?;
+                    let dist = dist.map(std::path::absolute).transpose()?;
+                    platform::build_linux(
+                        &root,
+                        &version,
+                        cache_volume.as_deref(),
+                        dist.as_deref(),
+                    )?
+                }
+                other => bail!(
+                    "{other} is built with `cargo build --locked --release -p oncl-cli -p oncl-server`"
+                ),
+            };
+            println!("{}", dir.display());
+        }
+    }
+    Ok(())
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Build a plugin crate for wasm32-unknown-unknown and write `<id>-<version>.onclp`:
+    /// the manifest's version must be the crate's, and the module must pass the ABI check.
+    Pack {
+        /// The plugin crate's directory (with `Cargo.toml` and `plugin.toml`).
+        dir: PathBuf,
+        /// Output directory [default: target/plugins].
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Print the port directories (`plugins/<dir>`, by name) whose plugin version is not
+    /// in the channel's index yet; nothing if every one is.
+    Pending {
+        /// `stable` or `beta`.
+        #[arg(long, value_parser = parse_channel)]
+        channel: Channel,
+        /// The directory of the indexes [default: `updates/v1/` of the workspace].
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// The ports' directory [default: `plugins/` of the workspace].
+        #[arg(long)]
+        plugins: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExtCommand {
+    /// Build the unpacked extensions and their zip/xpi into `target/extension/`.
+    Build,
+    /// Write the Firefox update manifest (`firefox/updates.json`) from the releases and their
+    /// downloaded `.xpi` files.
+    Updates {
+        /// The releases, JSON Lines as `gh api …/releases` gives them (none: an empty list).
+        #[arg(long)]
+        releases: Option<std::path::PathBuf>,
+        /// Directory with `v<version>/openncalayer-firefox-<version>.xpi` and `SHA256SUMS`.
+        #[arg(long)]
+        assets: std::path::PathBuf,
+        /// The repository the releases belong to, `owner/name`.
+        #[arg(long)]
+        repo: String,
+        /// The file to write.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+}
+
+fn registry(command: RegistryCommand) -> anyhow::Result<()> {
+    let root = oncl_testkit::workspace_root();
+    match command {
+        RegistryCommand::Build(build) => {
+            let RegistryBuild {
+                plugins,
+                updates,
+                releases,
+                upstream,
+                publishers,
+                tuf,
+                out,
+                zola,
+            } = *build;
+            let existing = |path: Option<PathBuf>, default: &str| {
+                path.or_else(|| {
+                    let dir = root.join(default);
+                    dir.is_dir().then_some(dir)
+                })
+            };
+            let inputs = xtask::registry::Inputs {
+                plugins: plugins.unwrap_or_else(|| root.join("plugins")),
+                updates: existing(updates, xtask::index::INDEX_DIR),
+                releases,
+                upstream,
+                publishers: existing(publishers, xtask::publishers::PUBLISHERS_DIR),
+                tuf: existing(tuf, xtask::tuf::REPO_DIR),
+            };
+            let out = out.unwrap_or_else(|| root.join("target/site"));
+            xtask::registry::build(&root, &inputs, &out, zola.as_deref())?;
+            Ok(())
+        }
+        RegistryCommand::Check { dir } => {
+            let base_url = xtask::registry::site::site_config(&root)?.base_url;
+            let report = xtask::registry::check(&dir, &base_url)?;
+            println!(
+                "{}: {} pages, {} links checked",
+                dir.display(),
+                report.pages,
+                report.links
+            );
+            Ok(())
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    match Cli::parse().command {
+        Command::CheckImports { exes } => match xtask::imports::check_imports(&exes)? {
+            0 => Ok(()),
+            found => anyhow::bail!("{found} violations of the Windows 7 import gate"),
+        },
+        Command::CheckElf { files } => {
+            for file in &files {
+                xtask::package::linux::check_elf(file, None)?;
+            }
+            Ok(())
+        }
+        Command::Package { command } => package(command),
+        Command::Ext {
+            command:
+                ExtCommand::Updates {
+                    releases,
+                    assets,
+                    repo,
+                    out,
+                },
+        } => xtask::ext_updates::write(releases.as_deref(), &assets, &repo, &out),
+        Command::Ext {
+            command: ExtCommand::Build,
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let out = root.join("target").join("extension");
+            for package in xtask::ext::build(&root, &out)? {
+                println!(
+                    "{}: {} and {}",
+                    package.browser,
+                    package.dir.display(),
+                    package.archive.display()
+                );
+            }
+            Ok(())
+        }
+        Command::ExtE2e { browser, download } => {
+            xtask::e2e::run(&oncl_testkit::workspace_root(), browser, download)
+        }
+        Command::FetchFixtures => xtask::fetch::fetch_fixtures(),
+        Command::Privacy { range, denylist } => {
+            let root = oncl_testkit::workspace_root();
+            let denylist = denylist
+                .map(|path| xtask::privacy::Denylist::read(&path))
+                .transpose()?;
+            let cas = xtask::privacy::TestCas::load(&root.join(xtask::privacy::TEST_CA_DIR))?;
+            let options = xtask::privacy::Options {
+                range: range.as_deref(),
+                denylist: denylist.as_ref(),
+            };
+            let findings = xtask::privacy::check(&root, &cas, &options)?;
+            for finding in &findings {
+                println!("{finding}");
+            }
+            if !findings.is_empty() {
+                bail!("{} privacy findings", findings.len());
+            }
+            println!("privacy: nothing found");
+            Ok(())
+        }
+        Command::PluginOpsCheck {
+            paths,
+            wasm_dir,
+            require_wasm,
+            json,
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let wasm_dir = wasm_dir.unwrap_or_else(|| root.join(xtask::plugin_ops::WASM_DIR));
+            let options = xtask::plugin_ops::Options {
+                extra: &paths,
+                wasm_dir: &wasm_dir,
+                require_wasm,
+            };
+            let report = xtask::plugin_ops::check(&root, &options)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+            } else {
+                print!("{}", report.to_text());
+            }
+            if report.exit_code() != 0 {
+                std::process::exit(report.exit_code());
+            }
+            Ok(())
+        }
+        Command::PluginVersionCheck => {
+            let report = xtask::plugin_version::check(&oncl_testkit::workspace_root())?;
+            print!("{}", report.to_text());
+            if report.exit_code() != 0 {
+                std::process::exit(report.exit_code());
+            }
+            Ok(())
+        }
+        Command::PluginPortsManual {
+            wasm_dir,
+            no_build,
+            filters,
+        } => xtask::plugin_ports::run(
+            &oncl_testkit::workspace_root(),
+            &xtask::plugin_ports::Options {
+                wasm_dir: wasm_dir.as_deref(),
+                no_build,
+                filters: &filters,
+            },
+        ),
+        Command::Registry { command } => registry(command),
+        Command::TokenEmu { config, vpcd } => {
+            xtask::token_emu::token_emu(&oncl_testkit::workspace_root(), &config, vpcd.as_deref())
+        }
+        Command::InteropOpenssl => xtask::interop::interop_openssl(&oncl_testkit::workspace_root()),
+        Command::InteropNcanode => xtask::ncanode::interop_ncanode(),
+        Command::PlatformInterop {
+            out,
+            oncl,
+            cases,
+            list,
+            hold_world,
+            scratch,
+            large_bytes,
+        } => xtask::platform_interop::run(
+            &oncl_testkit::workspace_root(),
+            &xtask::platform_interop::Options {
+                out,
+                oncl,
+                filter: cases,
+                list,
+                hold_world,
+                scratch,
+                large_bytes,
+            },
+        ),
+        Command::GenFixtures { check: false } => {
+            xtask::fixtures::gen_fixtures(&oncl_testkit::workspace_root())
+        }
+        Command::GenFixtures { check: true } => {
+            if !xtask::fixtures::check(&oncl_testkit::workspace_root())? {
+                anyhow::bail!("fixtures/synthetic is stale: run `cargo xtask gen-fixtures`");
+            }
+            println!("fixtures/synthetic is up to date");
+            Ok(())
+        }
+        Command::CheckReleaseFeatures => {
+            xtask::release_features::run(&oncl_testkit::workspace_root())
+        }
+        Command::Sdk { command } => {
+            xtask::sdk_delivery::run(&oncl_testkit::workspace_root(), command)
+        }
+        Command::Licenses {
+            check: false,
+            plugins,
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let path = if plugins {
+                xtask::licenses::write_plugins(&root)?
+            } else {
+                xtask::licenses::write(&root)?
+            };
+            println!("{}", path.display());
+            Ok(())
+        }
+        Command::Licenses {
+            check: true,
+            plugins,
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let (fresh, output, command) = if plugins {
+                (
+                    xtask::licenses::check_plugins(&root)?,
+                    xtask::licenses::PLUGINS_OUTPUT,
+                    "cargo xtask licenses --plugins",
+                )
+            } else {
+                (
+                    xtask::licenses::check(&root)?,
+                    xtask::licenses::OUTPUT,
+                    "cargo xtask licenses",
+                )
+            };
+            if !fresh {
+                anyhow::bail!("{output} is stale: run `{command}`");
+            }
+            println!("{output} is up to date");
+            Ok(())
+        }
+        Command::Index {
+            command:
+                IndexCommand::Add {
+                    channel,
+                    tag,
+                    release_assets,
+                    rollout,
+                    dir,
+                },
+        } => {
+            let dir = index_dir(dir);
+            if let Some(version) = tag.strip_prefix('v').and_then(|v| Version::parse(v).ok()) {
+                xtask::index::check_tag_root(&dir, &version)?;
+            }
+            let added = xtask::index::add(
+                &dir,
+                channel,
+                &tag,
+                &release_assets,
+                rollout,
+                OffsetDateTime::now_utc(),
+            )?;
+            let flavors: Vec<_> = added.flavors.iter().map(|f| f.as_str()).collect();
+            println!(
+                "{}: seq {}, {tag} for {}{}",
+                added.written.path.display(),
+                added.written.seq,
+                flavors.join(", "),
+                if added.extension {
+                    " and the extension"
+                } else {
+                    ""
+                }
+            );
+            print_written(&added.written);
+            Ok(())
+        }
+        Command::Index {
+            command: IndexCommand::Refresh { channel, dir },
+        } => {
+            let written =
+                xtask::index::refresh(&index_dir(dir), channel, OffsetDateTime::now_utc())?;
+            println!("{}: seq {}", written.path.display(), written.seq);
+            print_written(&written);
+            Ok(())
+        }
+        Command::Index {
+            command:
+                IndexCommand::AddPlugin {
+                    channel,
+                    tag,
+                    packages,
+                    rollout,
+                    dir,
+                    plugins,
+                },
+        } => {
+            let plugins = plugins.unwrap_or_else(|| oncl_testkit::workspace_root().join("plugins"));
+            let written = xtask::index::add_plugins(
+                &index_dir(dir),
+                &plugins,
+                channel,
+                &tag,
+                &packages,
+                rollout,
+                OffsetDateTime::now_utc(),
+            )?;
+            println!(
+                "{}: seq {}, {} plugin package(s) of {tag}",
+                written.path.display(),
+                written.seq,
+                packages.len()
+            );
+            print_written(&written);
+            Ok(())
+        }
+        Command::Plugin {
+            command: PluginCommand::Pack { dir, out },
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let out = out.unwrap_or_else(|| root.join("target").join("plugins"));
+            let path = xtask::plugin::pack(&root, &dir, &out)?;
+            println!("{}", path.display());
+            Ok(())
+        }
+        Command::Plugin {
+            command:
+                PluginCommand::Pending {
+                    channel,
+                    index,
+                    plugins,
+                },
+        } => {
+            let plugins = plugins.unwrap_or_else(|| oncl_testkit::workspace_root().join("plugins"));
+            for dir in xtask::plugin::pending(&plugins, &index_dir(index), channel)? {
+                println!("plugins/{dir}");
+            }
+            Ok(())
+        }
+        Command::Index {
+            command:
+                IndexCommand::Check {
+                    dir,
+                    offline,
+                    base,
+                    no_base,
+                    vm_smoke,
+                    conformance,
+                },
+        } => {
+            let github = xtask::index::GitHub::new();
+            let remote: Option<&dyn xtask::index::Remote> =
+                if offline { None } else { Some(&github) };
+            let options = xtask::index::CheckOptions {
+                base: (!no_base).then_some(base.as_str()),
+                vm_smoke,
+                conformance,
+                now: OffsetDateTime::now_utc(),
+            };
+            let all = xtask::index::check(&dir, &options, remote)?;
+            if all.is_empty() {
+                println!("{}: no index is published yet", dir.display());
+            }
+            for checked in all {
+                let versions: Vec<_> = checked.new_versions.iter().map(|v| v.to_string()).collect();
+                println!(
+                    "{}: seq {} (base {}), new versions: {}",
+                    checked.channel,
+                    checked.seq,
+                    checked
+                        .base_seq
+                        .map_or_else(|| "none".to_owned(), |s| s.to_string()),
+                    if versions.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        versions.join(", ")
+                    }
+                );
+            }
+            if offline {
+                println!("offline: HEAD of the assets, vm-smoke and conformance not checked");
+            }
+            Ok(())
+        }
+        Command::Upstream { command } => xtask::upstream::cli::run(command),
+        Command::Tuf { command } => xtask::tuf::cli::run(command),
+        Command::Vendor { command } => xtask::vendor::cli::run(command),
+        Command::Winget { command } => xtask::winget::run(command),
+        Command::Win7 {
+            arch,
+            out,
+            target_dir,
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let out = out.unwrap_or_else(|| root.join("target").join("win7"));
+            xtask::win7::run(&root, arch, &out, target_dir.as_deref())
+        }
+        Command::Builtins {
+            command: BuiltinsCommand::Build { out },
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let out = out.unwrap_or_else(|| root.join(xtask::builtins::DEFAULT_OUT));
+            xtask::builtins::build(&root, &out)?;
+            Ok(())
+        }
+        Command::Builtins {
+            command: BuiltinsCommand::Check { bin, dir },
+        } => {
+            let root = oncl_testkit::workspace_root();
+            let dir = dir.unwrap_or_else(|| root.join(xtask::builtins::DEFAULT_OUT));
+            xtask::builtins::check(&bin, &dir)
+        }
+        Command::PlatformProof(args) => xtask::platform::run(args),
+        Command::PlatformTokenHost(args) => xtask::platform::token_host::run(args),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Command, clap::Error> {
+        Cli::try_parse_from(std::iter::once("xtask").chain(args.iter().copied()))
+            .map(|cli| cli.command)
+    }
+
+    #[test]
+    fn the_cli_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn index_commands_parse() {
+        assert!(matches!(
+            parse(&[
+                "index",
+                "add",
+                "--channel",
+                "beta",
+                "--tag",
+                "v1.0.0",
+                "--release-assets",
+                "a"
+            ]),
+            Ok(Command::Index {
+                command: IndexCommand::Add {
+                    channel: Channel::Beta,
+                    rollout: 100,
+                    ..
+                }
+            })
+        ));
+        assert!(matches!(
+            parse(&["index", "refresh", "--channel", "stable"]),
+            Ok(Command::Index {
+                command: IndexCommand::Refresh {
+                    channel: Channel::Stable,
+                    dir: None
+                }
+            })
+        ));
+        assert!(matches!(
+            parse(&["index", "check", "updates/v1", "--offline"]),
+            Ok(Command::Index {
+                command: IndexCommand::Check {
+                    offline: true,
+                    vm_smoke: false,
+                    conformance: false,
+                    ..
+                }
+            })
+        ));
+        assert!(matches!(
+            parse(&[
+                "index",
+                "check",
+                "updates/v1",
+                "--vm-smoke",
+                "--conformance"
+            ]),
+            Ok(Command::Index {
+                command: IndexCommand::Check {
+                    offline: false,
+                    vm_smoke: true,
+                    conformance: true,
+                    ..
+                }
+            })
+        ));
+        for args in [
+            &["index", "check", "updates/v1", "--offline", "--vm-smoke"][..],
+            &["index", "check", "updates/v1", "--offline", "--conformance"],
+            &[
+                "index",
+                "add",
+                "--channel",
+                "nightly",
+                "--tag",
+                "v1.0.0",
+                "--release-assets",
+                "a",
+            ],
+            &[
+                "index",
+                "add",
+                "--channel",
+                "beta",
+                "--tag",
+                "v1.0.0",
+                "--release-assets",
+                "a",
+                "--rollout",
+                "101",
+            ],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
+        }
+    }
+}

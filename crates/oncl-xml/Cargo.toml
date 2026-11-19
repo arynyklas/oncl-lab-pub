@@ -1,0 +1,41 @@
+[package]
+name = "oncl-xml"
+description = "Bounded XMLDSig and XAdES profiles for OpenNCALayer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+keywords = ["xmldsig", "xades", "xml", "signature", "gost"]
+categories = ["cryptography", "parser-implementations"]
+include = ["/src/**", "/LICENSE", "/NOTICE"]
+
+[features]
+testing = ["oncl-pki/testing"]
+
+[dependencies]
+oncl-pki.workspace = true
+base64.workspace = true
+der.workspace = true
+roxmltree.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
+
+[dev-dependencies]
+oncl-testkit.workspace = true
+tempfile.workspace = true
+time = { workspace = true, features = ["macros"] }
+x509-cert.workspace = true
+
+# The integration tests are three binaries: `tests/all/` (`main.rs` and the other files, each
+# a module of it; the XAdES modules are `#[cfg(feature = "testing")]` there), and
+# `signed_intake` and `xades_large_crl`, which install their own `#[global_allocator]`.
+[[test]]
+name = "xades_large_crl"
+required-features = ["testing"]
+
+[[example]]
+name = "indexed_xml_probe"
+required-features = ["testing"]

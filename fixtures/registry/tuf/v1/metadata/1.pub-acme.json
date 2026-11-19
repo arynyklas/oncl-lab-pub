@@ -1,0 +1,47 @@
+{
+  "signatures": [],
+  "signed": {
+    "_type": "targets",
+    "expires": "2027-11-01T00:00:00Z",
+    "spec_version": "1.0.31",
+    "targets": {
+      "plugins/acme/kz.acme.market/0.1.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "5cdc5b4ecfbcf1f91fc7f2d9f20b01c78f3b7007546af2289f2f0edf909a9cbb"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.market",
+            "version": "0.1.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-5cdc5b4ecfbcf1f91fc7f2d9f20b01c78f3b7007546af2289f2f0edf909a9cbb/kz.acme.market-0.1.0.onclp",
+            "source": {
+              "archive_sha256": "b69275f017a7dcf618b6e8af5c71aad1df83479632d7f9b3dff18be458cdcc83",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.market-0.1.0.src.tar.gz",
+              "path": "crates/market",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.market.Signer"
+            ],
+            "name": {
+              "ru": "Старый",
+              "kk": "Ескі",
+              "en": "Old"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100
+          }
+        }
+      }
+    },
+    "version": 1
+  }
+}

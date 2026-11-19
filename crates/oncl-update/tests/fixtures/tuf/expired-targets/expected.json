@@ -1,0 +1,18 @@
+{
+  "name": "expired-targets",
+  "attack": "2.targets.json is past its expires",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "targets",
+  "error_class": "ExpiredMetadataError: targets expires 2026-11-15T12:00:00Z is before the clock",
+  "changed_files_vs_valid": [
+    "metadata/2.targets.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "ExpiredMetadataError: New targets is expired",
+    "diverges_from_contract": false
+  }
+}

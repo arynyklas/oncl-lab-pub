@@ -1,0 +1,18 @@
+{
+  "name": "rollback-timestamp",
+  "attack": "an older timestamp (version = TS_VERSION-3600) is served after TS_VERSION was accepted",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": "client already accepted the 'valid' repository at the same clock",
+  "must_fail_at": "timestamp",
+  "error_class": "Rollback: timestamp version lower than the trusted one (BadVersionNumberError)",
+  "changed_files_vs_valid": [
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "BadVersionNumberError: New timestamp version 1794697200 must be >= 1794700800",
+    "diverges_from_contract": false
+  }
+}

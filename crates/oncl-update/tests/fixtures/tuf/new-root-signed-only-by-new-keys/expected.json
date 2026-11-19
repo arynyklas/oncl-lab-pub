@@ -1,0 +1,18 @@
+{
+  "name": "new-root-signed-only-by-new-keys",
+  "attack": "3.root.json (root key rotated) is signed only by the new root key root-b",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "root",
+  "error_class": "UnsignedMetadataError: the new root is not signed by the threshold of the OLD root keys",
+  "changed_files_vs_valid": [
+    "metadata/3.root.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "UnsignedMetadataError: root was signed by 0/1 keys",
+    "diverges_from_contract": false
+  }
+}

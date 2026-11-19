@@ -1,0 +1,27 @@
+{
+  "name": "delegated-top-level-name",
+  "attack": "a delegated role is named timestamp",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": null,
+  "probes": [
+    "plugins/alpha/kz.alpha.signer/1.0.0.onclp",
+    "plugins/beta/kz.beta.tool/2.1.0.onclp"
+  ],
+  "contract": {
+    "refresh": "refused at the targets: not a pub-<name> role",
+    "roles": {}
+  },
+  "changed_files_vs_delegated_valid": [
+    "metadata/1.pub-beta.json",
+    "metadata/1.snapshot.json",
+    "metadata/1.targets.json",
+    "metadata/1.timestamp.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "refresh": "DeserializationError",
+    "error": "Failed to deserialize JSON (ValueError: Delegated roles cannot be empty or use top-level role names)",
+    "targets": {}
+  }
+}

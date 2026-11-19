@@ -1,0 +1,10 @@
+{
+  "name": "valid",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "metadata/1.root.json",
+  "result": "accepted: root 1 -> 2 -> 3, timestamp, snapshot 2, targets 2, both targets download and match",
+  "targets": {
+    "indexes/stable.json": "targets/indexes/4d6db83f027ece1d378930dbe36b31f01250194905a562d75d14fdb982e41dff.stable.json",
+    "indexes/beta.json": "targets/indexes/7cf966dccb1a46f60e6150ac7472fd1f9aacc475b13b63cfe2913cf018f7935f.beta.json"
+  }
+}

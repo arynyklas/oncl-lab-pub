@@ -1,0 +1,8 @@
+{#- The state of `publisher`: a badge unless it is active. -#}
+{%- if publisher.state == "retired" -%}
+<span class="badge">{{ trans(key="publisher_retired", lang=lang) }}</span>
+{%- elif publisher.state == "revoked" -%}
+<span class="badge revoked">{{ trans(key="publisher_revoked", lang=lang) | replace(from="{date}", to=publisher.revoked) }}</span>
+{%- else -%}
+{{ trans(key="publisher_active", lang=lang) }}
+{%- endif -%}

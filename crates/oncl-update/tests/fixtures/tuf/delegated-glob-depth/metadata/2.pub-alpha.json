@@ -1,0 +1,70 @@
+{
+ "signatures": [
+  {
+   "keyid": "6e01e58674412b169206c31ef4fea0eb5e8d372a6c8967de1be4df182ba35ee3",
+   "sig": "9a7a3eda6e12fc22001d782c6ea02e8c4f33b4d58782b597dd919c9d7c40cc36890104a9035471e9a56ba3ced80e6420ee2c240b53520290b5b142e45363ba0c"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2026-12-15T00:00:00Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "plugins/alpha/kz.alpha.signer/1.0.0.onclp": {
+    "custom": {
+     "oncl": {
+      "capabilities": {},
+      "channel": "stable",
+      "id": "kz.alpha.signer",
+      "min_core": "0.1.2",
+      "modules": [
+       "kz.alpha.Module"
+      ],
+      "name": {
+       "en": "kz.alpha.signer",
+       "kk": "kz.alpha.signer",
+       "ru": "kz.alpha.signer"
+      },
+      "revoked": false,
+      "rollout": 100,
+      "schema": 1,
+      "url": "https://downloads.example.invalid/kz.alpha.signer-1.0.0.onclp",
+      "version": "1.0.0"
+     }
+    },
+    "hashes": {
+     "sha256": "4757dde952a460f7ef00daedbf5bf8424a3c5d67cbfda7182aa18f755529751b"
+    },
+    "length": 40
+   },
+   "plugins/alpha/kz.alpha.signer/extra/1.0.0.onclp": {
+    "custom": {
+     "oncl": {
+      "capabilities": {},
+      "channel": "stable",
+      "id": "kz.alpha.signer",
+      "min_core": "0.1.2",
+      "modules": [
+       "kz.alpha.Module"
+      ],
+      "name": {
+       "en": "kz.alpha.signer",
+       "kk": "kz.alpha.signer",
+       "ru": "kz.alpha.signer"
+      },
+      "revoked": false,
+      "rollout": 100,
+      "schema": 1,
+      "url": "https://downloads.example.invalid/kz.alpha.signer-1.0.0.onclp",
+      "version": "1.0.0"
+     }
+    },
+    "hashes": {
+     "sha256": "a9a10cfe3bdc258e80fae4e13c59743801b276ba6ea3ec072d618a369af815a9"
+    },
+    "length": 23
+   }
+  },
+  "version": 2
+ }
+}

@@ -1,0 +1,83 @@
+[package]
+name = "oncl-ui"
+description = "OpenNCALayer dialogs and windows in Slint: storage, file and password; key choice; certificate request and installation; the legacy Applet's password; settings, the TLS wizard and About; the system tray and its notifications"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+der.workspace = true
+# The manual tools reach every family of the SDK that needs no token: XML/XAdES/WS-Security,
+# PDF/PAdES and JOSE, and the plugins of the Plugins page (`plugins`: the daemon has the plugin
+# runtime already, so the closure of `openncalayer` does not grow by it). `oncl-xml` is in the
+# daemon already (through `oncl-plugin`); `oncl-pdf` is a workspace crate whose dependencies the
+# daemon has already: the closure of `openncalayer` grows by that crate alone and by no
+# third-party one.
+oncl-core = { workspace = true, features = ["xml", "pdf", "jose", "plugins"] }
+oncl-flows.workspace = true
+oncl-desktop.workspace = true
+oncl-pdf.workspace = true
+oncl-pki.workspace = true
+# The manual window's Plugins page: the declared operations, their typed parameters and the
+# consent lines come from the package manifest (`oncl_plugin::operations`).
+oncl-plugin.workspace = true
+oncl-tls.workspace = true
+oncl-token.workspace = true
+oncl-trust.workspace = true
+oncl-xml.workspace = true
+png.workspace = true
+rfd.workspace = true
+# `raw-window-handle-06`: the file and folder pickers are owned by (and stay above) their dialog,
+# and on Windows the dialog's HWND is brought to the foreground.
+# `unstable-winit-030`: a dialog window destroyed behind Slint's back (xkill, a compositor
+# restart) is seen as winit's `Destroyed` event and counts as cancelled. The API follows
+# winit 0.30 and may change in a Slint minor release, hence `~` in the workspace version.
+slint = { workspace = true, features = ["raw-window-handle-06", "unstable-winit-030"] }
+thiserror.workspace = true
+time.workspace = true
+tracing.workspace = true
+webbrowser.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle.workspace = true
+# user32/kernel32 and the shell's tray balloons only: the Windows 7 build must keep working.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni.workspace = true
+# Desktop notifications (`org.freedesktop.Notifications`); ksni's own zbus.
+zbus.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[dev-dependencies]
+# A plugin ticket on a key-use event, to test that the document guard refuses it.
+oncl-core = { workspace = true, features = ["testing"] }
+# A synthetic plugin module for the Plugins page tests, written as WebAssembly text.
+oncl-pdk.workspace = true
+wat.workspace = true
+sha2.workspace = true
+oncl-testkit.workspace = true
+oncl-pki = { workspace = true, features = ["testing"] }
+# A fake mkcert CA in the TLS wizard's tests.
+rcgen.workspace = true
+# The command line's JSON reports, read by the parity tests.
+serde_json.workspace = true
+tempfile.workspace = true
+time = { workspace = true, features = ["macros"] }
+x509-cert.workspace = true
