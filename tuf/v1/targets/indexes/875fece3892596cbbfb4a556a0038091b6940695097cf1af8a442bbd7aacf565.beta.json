@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "channel": "beta",
+  "seq": 1,
+  "generated": "2026-11-20T17:18:24Z",
+  "expires": "2026-12-20T17:18:24Z",
+  "core": [
+    {
+      "version": "0.1.2-beta.1",
+      "flavors": {
+        "linux-x64": {
+          "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/OpenNCALayer-0.1.2-beta.1-linux-x64-full.nupkg",
+          "sha256": "b92d705c645fd78b8ab4684dac0c1cfd8676b54ab5af4472ff9b5be38c1d1d8f",
+          "size": 32880710
+        },
+        "osx": {
+          "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/OpenNCALayer-0.1.2-beta.1-osx-full.nupkg",
+          "sha256": "78963d5cecee63e75154af8bb61385d8be2361aee266f1199cb3a6392cfa1506",
+          "size": 47640810
+        },
+        "win-x64": {
+          "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/OpenNCALayer-0.1.2-beta.1-win-x64-full.nupkg",
+          "sha256": "f6bfc39f9656b4049b8424fafaff5a8571dab4fcb684256394fea6a1907d5f54",
+          "size": 23145764
+        },
+        "win-x86": {
+          "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/OpenNCALayer-0.1.2-beta.1-win-x86-full.nupkg",
+          "sha256": "fd68228868da7660852c3054e597b01d6ba974222f654221d8dab6afe450edd1",
+          "size": 21073612
+        },
+        "win7-x64": {
+          "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/OpenNCALayer-0.1.2-beta.1-win7-x64-full.nupkg",
+          "sha256": "149f6266b8a25b6694d425def0ddb3549bc292fbc2ee2bc50dff8aec2aea3329",
+          "size": 23227159
+        },
+        "win7-x86": {
+          "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/OpenNCALayer-0.1.2-beta.1-win7-x86-full.nupkg",
+          "sha256": "0b9dedd821c5a41b52f797ab5a6e7648288634e06c66016d6236b2d6776e482f",
+          "size": 21186670
+        }
+      },
+      "rollout": 100,
+      "revoked": false,
+      "notes_url": "https://github.com/arynyklas/oncl-lab-pub/releases/tag/v0.1.2-beta.1"
+    }
+  ],
+  "extension": {
+    "version": "0.1.2-beta.1",
+    "chromium_zip": {
+      "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/openncalayer-chromium-0.1.2-beta.1.zip",
+      "sha256": "3a7139e30876308571cf97d67e0f88569082ff14faaf1eb78d3b1026a5169854"
+    },
+    "firefox_xpi": {
+      "url": "https://github.com/arynyklas/oncl-lab-pub/releases/download/v0.1.2-beta.1/openncalayer-firefox-0.1.2-beta.1.xpi",
+      "sha256": "b68ed26e27829d43cf96ae72a5cbb297813350a8b95e63ac4d125525d64aa295"
+    }
+  },
+  "plugins": []
+}
