@@ -1,0 +1,20 @@
+{
+  "name": "rollback-snapshot",
+  "attack": "a newer timestamp (TS_VERSION+3600) names snapshot v1 after snapshot v2 was accepted; the pair metadata/timestamp.json + metadata/1.snapshot.json replaces timestamp.json/2.snapshot.json",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": "client already accepted the 'valid' repository at the same clock",
+  "must_fail_at": "snapshot",
+  "error_class": "Rollback: snapshot version lower than the trusted one (BadVersionNumberError)",
+  "changed_files_vs_valid": [
+    "metadata/1.snapshot.json",
+    "metadata/1.targets.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "BadVersionNumberError: New snapshot version must be >= 2, got version 1",
+    "diverges_from_contract": false
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "rollback-targets",
+  "attack": "a newer timestamp (TS_VERSION+7200) and snapshot v3 whose `targets.json` entry is v1 after targets v2 was accepted; the pair metadata/3.snapshot.json + metadata/1.targets.json",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": "client already accepted the 'valid' repository at the same clock",
+  "must_fail_at": "snapshot or targets",
+  "error_class": "Rollback: the targets version in the new snapshot (v1) is lower than the trusted one (python-tuf refuses at the targets step with BadVersionNumberError; a client MAY equally refuse at the snapshot step, but must never accept)",
+  "changed_files_vs_valid": [
+    "metadata/1.targets.json",
+    "metadata/3.snapshot.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "refresh",
+    "error": "BadVersionNumberError: Expected targets.json version 1, got 2.",
+    "diverges_from_contract": false
+  }
+}

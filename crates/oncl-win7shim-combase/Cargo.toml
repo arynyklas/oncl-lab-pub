@@ -1,0 +1,12 @@
+[package]
+name = "oncl-win7shim-combase"
+description = "combase.dll of the Windows 7 builds of OpenNCALayer: forwards the combase.dll imports of the windows crates to ole32.dll"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]

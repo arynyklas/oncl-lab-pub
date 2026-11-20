@@ -1,0 +1,109 @@
+id = "io.github.arynyklas.openncalayer.port.energy"
+version = "1.0.0"
+min_core = "0.1.0-alpha.7"
+modules = ["kz.energy.sign.SignEnergy"]
+
+[name]
+ru = "Sign Energy (порт OpenNCALayer)"
+kk = "Sign Energy (OpenNCALayer порты)"
+en = "Sign Energy (OpenNCALayer port)"
+
+[description]
+ru = "Подписание документов системы «Тезис» (energy.kz) в формате CMS"
+kk = "«Тезис» жүйесінің (energy.kz) құжаттарына CMS пішімінде қол қою"
+en = "Signs documents of the Tezis system (energy.kz) as CMS"
+
+[replaces]
+symname = "kz.energy.sign"
+version = "2.0.0"
+
+[capabilities]
+keys = true
+dialogs = true
+settings = true
+
+[[operations]]
+name = "sign-cms-attached-timestamp"
+module = "kz.energy.sign.SignEnergy"
+manual = true
+request = '{"module":"kz.energy.sign.SignEnergy","method":"sign","args":{"encapsulate":true,"isDigested":false,"tsaProfile":true,"data":[{"id":"1","name":"document","base64":"{file:base64}"}]}}'
+label = { ru = "Подписать CMS: с меткой времени (данные внутри) (без окна ошибки)", kk = "CMS қол қою: уақыт белгісі бар (деректер ішінде) (қате терезесінсіз)", en = "Sign a CMS: time-stamped (attached) (no error window)" }
+
+[[operations.params]]
+name = "file"
+kind = "document"
+
+[operations.uses]
+imports = ["keys_select", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:file"
+
+[operations.uses.key.profile]
+encapsulate = true
+timestamp = "kalkan"
+
+[[operations]]
+name = "sign-cms-attached"
+module = "kz.energy.sign.SignEnergy"
+manual = true
+request = '{"module":"kz.energy.sign.SignEnergy","method":"sign","args":{"encapsulate":true,"isDigested":false,"tsaProfile":false,"data":[{"id":"1","name":"document","base64":"{file:base64}"}]}}'
+label = { ru = "Подписать CMS: данные внутри (без окна ошибки)", kk = "CMS қол қою: деректер ішінде (қате терезесінсіз)", en = "Sign a CMS: attached (no error window)" }
+
+[[operations.params]]
+name = "file"
+kind = "document"
+
+[operations.uses]
+imports = ["keys_select", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:file"
+
+[operations.uses.key.profile]
+encapsulate = true
+
+[[operations]]
+name = "sign-cms-detached-timestamp"
+module = "kz.energy.sign.SignEnergy"
+manual = true
+request = '{"module":"kz.energy.sign.SignEnergy","method":"sign","args":{"encapsulate":false,"isDigested":false,"tsaProfile":true,"data":[{"id":"1","name":"document","base64":"{file:base64}"}]}}'
+label = { ru = "Подписать CMS: с меткой времени (отсоединённая) (без окна ошибки)", kk = "CMS қол қою: уақыт белгісі бар (бөлек) (қате терезесінсіз)", en = "Sign a CMS: time-stamped (detached) (no error window)" }
+
+[[operations.params]]
+name = "file"
+kind = "document"
+
+[operations.uses]
+imports = ["keys_select", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:file"
+
+[operations.uses.key.profile]
+timestamp = "kalkan"
+
+[[operations]]
+name = "sign-cms-detached"
+module = "kz.energy.sign.SignEnergy"
+manual = true
+request = '{"module":"kz.energy.sign.SignEnergy","method":"sign","args":{"encapsulate":false,"isDigested":false,"tsaProfile":false,"data":[{"id":"1","name":"document","base64":"{file:base64}"}]}}'
+label = { ru = "Подписать CMS: отсоединённая подпись (без окна ошибки)", kk = "CMS қол қою: бөлек қолтаңба (қате терезесінсіз)", en = "Sign a CMS: detached (no error window)" }
+
+[[operations.params]]
+name = "file"
+kind = "document"
+
+[operations.uses]
+imports = ["keys_select", "keys_release", "random", "keys_sign_cms_ex"]
+network = "pki"
+
+[[operations.uses.key]]
+kind = "cms_ex"
+content = "param:file"

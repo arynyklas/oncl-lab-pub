@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{#- A publisher's page: its entry, and for one that is not revoked every version of its
+    plugins in its newest role, with the copies of the package and the source archive in
+    the project's releases. Its homepage and a plugin's repository are text, not links. -#}
+{%- block title %}{{ data.publishers.list[page.extra.name].display[lang] }} · {{ config.title }}{% endblock title %}
+{% block main %}
+{%- set publisher = data.publishers.list[page.extra.name] %}
+<h1>{{ publisher.display[lang] }}</h1>
+{%- if publisher.state == "revoked" %}
+<p class="notice">{{ trans(key="publisher_page_revoked", lang=lang) | replace(from="{date}", to=publisher.revoked) }}</p>
+{%- elif publisher.state == "retired" %}
+<p class="notice">{{ trans(key="publisher_page_retired", lang=lang) }}</p>
+{%- endif %}
+<dl class="facts">
+<dt>{{ trans(key="col_publisher", lang=lang) }}</dt><dd><code>{{ publisher.name }}</code></dd>
+<dt>{{ trans(key="col_status", lang=lang) }}</dt><dd>{% include "parts/publisher_state.html" %}</dd>
+<dt>{{ trans(key="col_prefix", lang=lang) }}</dt><dd><code>{{ publisher.id_prefix }}</code></dd>
+{%- if publisher.homepage %}
+<dt>{{ trans(key="publisher_homepage", lang=lang) }}</dt><dd><code>{{ publisher.homepage }}</code></dd>
+{%- endif %}
+{%- if publisher.contact %}
+<dt>{{ trans(key="publisher_contact", lang=lang) }}</dt><dd>{{ publisher.contact }}</dd>
+{%- endif %}
+{%- if publisher.modules %}
+<dt>{{ trans(key="plugin_modules", lang=lang) }}</dt><dd>{% for module in publisher.modules %}<code>{{ module }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+{%- endif %}
+{%- if publisher.bundles %}
+<dt>{{ trans(key="publisher_bundles", lang=lang) }}</dt><dd>{% for bundle in publisher.bundles %}<code>{{ bundle }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+{%- endif %}
+</dl>
+{%- if publisher.state != "revoked" %}
+<h2>{{ trans(key="publisher_plugins", lang=lang) }}</h2>
+{%- if publisher.plugins %}
+<p class="note">{{ trans(key="publisher_note", lang=lang) }}</p>
+{%- for id in publisher.plugins %}
+{%- set plugin = data.publishers.plugins[id] %}
+<section class="entry" id="plugin-{{ plugin.id }}">
+<h3>{{ plugin.name[lang] }}</h3>
+<dl class="facts">
+<dt>{{ trans(key="plugin_id", lang=lang) }}</dt><dd><code>{{ plugin.id }}</code></dd>
+<dt>{{ trans(key="plugin_modules", lang=lang) }}</dt><dd>{% for module in plugin.modules %}<code>{{ module }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+{%- if plugin.replaces %}
+<dt>{{ trans(key="col_replaces", lang=lang) }}</dt><dd><code>{{ plugin.replaces.symname }}</code> {{ plugin.replaces.version }}</dd>
+{%- endif %}
+{%- for name in ["beta", "stable"] %}
+{%- if name in plugin.channels %}
+{%- set offered = plugin.channels[name] %}
+<dt>{{ name }}</dt><dd>{{ offered.version }}{% if offered.rollout < 100 %} ({{ trans(key="rollout", lang=lang) }} {{ offered.rollout }} %){% endif %}</dd>
+{%- endif %}
+{%- endfor %}
+</dl>
+<h4>{{ trans(key="plugin_capabilities", lang=lang) }}</h4>
+{%- if plugin.capabilities[lang] %}
+<ul>
+{%- for line in plugin.capabilities[lang] %}
+<li>{{ line }}</li>
+{%- endfor %}
+</ul>
+{%- else %}
+<p>{{ trans(key="plugin_no_capabilities", lang=lang) }}</p>
+{%- endif %}
+<div class="table" role="region" aria-labelledby="versions-{{ plugin.id }}" tabindex="0">
+<table>
+<caption id="versions-{{ plugin.id }}">{{ trans(key="publisher_versions", lang=lang) }}: {{ plugin.name[lang] }}</caption>
+<thead><tr>
+<th scope="col">{{ trans(key="col_version", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_channel", lang=lang) }}</th>
+<th scope="col">{{ trans(key="plugin_min_core", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_package", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_source", lang=lang) }}</th>
+<th scope="col">{{ trans(key="col_files", lang=lang) }}</th>
+</tr></thead>
+<tbody>
+{%- for v in plugin.versions %}
+<tr>
+<th scope="row">{{ v.version }}{% if v.revoked %} <span class="badge revoked">{{ trans(key="version_revoked", lang=lang) }}</span>{% endif %}</th>
+<td>{{ v.channel }}{% if v.rollout < 100 %} ({{ trans(key="rollout", lang=lang) }} {{ v.rollout }} %){% endif %}</td>
+<td>{{ v.min_core }}</td>
+<td><a href="{{ v.package_url }}">.onclp</a>, {{ v.size }} {{ trans(key="bytes", lang=lang) }}<br><code class="hash">{{ v.sha256 }}</code></td>
+<td><a href="{{ v.source_url }}">{{ v.source_name }}</a> · {{ v.license }}<br><code class="hash">{{ v.source_sha256 }}</code></td>
+<td><a href="{{ v.buildinfo_url }}">BUILDINFO.json</a>, <a href="{{ v.release_url }}">{{ trans(key="file_release", lang=lang) }}</a></td>
+</tr>
+{%- endfor %}
+</tbody>
+</table>
+</div>
+{%- for v in plugin.versions %}
+<details>
+<summary>{{ trans(key="publisher_check", lang=lang) }} {{ v.version }}</summary>
+<dl class="facts">
+<dt>{{ trans(key="source_path", lang=lang) }}</dt><dd><code>src/{{ v.source_path }}</code></dd>
+{%- if v.vcs %}
+<dt>{{ trans(key="source_vcs", lang=lang) }}</dt><dd><code>{{ v.vcs.url }}</code> <code class="hash">{{ v.vcs.rev }}</code></dd>
+{%- endif %}
+</dl>
+<p>{{ trans(key="publisher_verify", lang=lang) }}</p>
+<pre><code>{{ v.verify }}</code></pre>
+</details>
+{%- endfor %}
+</section>
+{%- endfor %}
+{%- else %}
+<p class="nodata">{{ trans(key="publisher_no_plugins", lang=lang) }}</p>
+{%- endif %}
+{%- endif %}
+<p><a href="{{ get_url(path='@/publishers/_index.md', lang=lang) }}#pub-{{ publisher.name }}">{{ trans(key="publisher_back", lang=lang) }}</a></p>
+{% endblock main %}

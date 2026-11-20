@@ -1,0 +1,102 @@
+{
+  "seed_prefix": "oncl-tuf-oracle-v1/",
+  "note": "SYNTHETIC test keys. seed = sha256(seed_prefix + name); Ed25519 private key from the 32-byte seed.",
+  "keys": {
+    "root-a": {
+      "seed_hex": "f461c83864ca83f4991a55d141dc66250fae2a2f07e85205abf7faae399002d8",
+      "public_hex": "cfaa5e2e8b3abd5237aeada9643aa498811ca413bfed7711e6761b3654a6d973",
+      "keyid": "ef44ca6055ac74925e4155dca516c99a2e0d1dc526a4e38d056df766f91b9282"
+    },
+    "root-b": {
+      "seed_hex": "bc6fd1e0d0b49f301fe5a6100e976c668d5d24ca1b8925d3af1f04c62e465b67",
+      "public_hex": "a9db5955c93adecf4ff734a66a9e58b90e4dddb5182a719945678a6d8aa9b342",
+      "keyid": "905761cda5822d2c1e11928375afcf8f86ac7603e071dee14340b5734fae9795"
+    },
+    "targets": {
+      "seed_hex": "6f476a8f16b94edb3c4e07ef0c679b2f0857e3e123f4a0bdec8606771d0efc8b",
+      "public_hex": "be43908bc8de609a04c1cb68cf8809d7f4642e98d8d356f9f5020fc3839d15e2",
+      "keyid": "5d7f9b92a07febc3f3740f556219d58b3d0410c89719ddff4a2dd19232cfc146"
+    },
+    "snapshot": {
+      "seed_hex": "2191f7533d9c556651632671fb6efc0fd366010ebdfb726010f384d4207c52c9",
+      "public_hex": "44efef77e0d8001f6c221b981bd0e571d8a8f9a8f523ef85390aadd8e4acc142",
+      "keyid": "9acc66b6286cb1bec6c965d216eba52e4267632df8889973701de2d5da499964"
+    },
+    "timestamp-1": {
+      "seed_hex": "a55b1258f96d6ce3c851954468887464acb9f7e6c2da1c321cc8b6965b78feb1",
+      "public_hex": "6d8bcd708cb8e9c83bf3728fdfedeeed6893738947102bbaacdfb5bb107b5728",
+      "keyid": "5670a746ed489ac911a611e5605d2fd3ad848baf93baac565ef26dce996a642d"
+    },
+    "timestamp-2": {
+      "seed_hex": "1a72d6929ce5ff86a82b2b97634f89023a0ae8e2632f548f5887de81547c0386",
+      "public_hex": "725ac05cd1ff31946a7cb443e0838a9d34d19e08d61b78ea90ceefe480b8daf9",
+      "keyid": "e837e8b183c59a2b7ebcd3173500127f0c1ef57d5d590e0673c8190dd9536976"
+    },
+    "v2-root": {
+      "seed_hex": "02a15f94ec96b2c5d032c4855614b9c06b1b7bfe2eb62b3e7e18c6af72ed7cf6",
+      "public_hex": "e6488e8b7647a05b2ed4cc4092de9dca58f00f1d2da98385f502ae90f32c62ff",
+      "keyid": "024b23cd46534f048e05600b6b80d15bf12c8e9fe381aa7abe23e8c228a051b0"
+    },
+    "v2-snapshot": {
+      "seed_hex": "8ac43b608a7478464bc05b171726ca8a2b56a7d7b758fa4783166c70e566f8a3",
+      "public_hex": "2cb59e11e04ea3ed2084d3e9c8eeff37f81950d9adbd04c5013f61273f8ddb86",
+      "keyid": "97d397f3903c599615944a34bc685a4ec2476ca52cc2d64557318598778c3349"
+    },
+    "v2-timestamp": {
+      "seed_hex": "81621c4787557cf0f72e5a5ac32b7a2bcd8ce03ccdbbd25181ed7142113aa5f6",
+      "public_hex": "5023bc79581a7f9de78541ea8b4ccfd19a7c01eb955ebb803ef96365aedac5a4",
+      "keyid": "a8f49538930fc3f49767e83ef72eea6fc9ac1fab5173c3891f1fe7a09aa64f13"
+    },
+    "pub-alpha": {
+      "seed_hex": "e4b6b317dcd8aaf21595c332ec5b05104e2ecd63e2fe2dc40d6b289f187d422b",
+      "public_hex": "0ad2e32cace92756017ef8b809bcebab8c8488090933db8a2503fcd5d0bd5739",
+      "keyid": "6e01e58674412b169206c31ef4fea0eb5e8d372a6c8967de1be4df182ba35ee3"
+    },
+    "pub-beta": {
+      "seed_hex": "614d3eefbbedee9663397a04e4eb365ee49eea053309db1399f64127e12cc10c",
+      "public_hex": "02d5af26e1a239e512e503df8808621b18cbed50d87b09e30891da1713ba8af7",
+      "keyid": "ac88935431a02f15ed08c5ee8abbf961a7a0f99e0db3a40a65e7e994839cf027"
+    },
+    "pub-beta-2": {
+      "seed_hex": "213504fbafefbdd0be778d6f4ed49c449203369266648a09fca3b178278c5193",
+      "public_hex": "58eb0ca827ef6dc5578387655abd425c5241f9346112dbc4490ea3f96457e905",
+      "keyid": "bdd02e810fe597a60d5112bc540aac50c5f0f209934bdaef282a69338525f4f6"
+    }
+  },
+  "roles": {
+    "root-v1": {
+      "root": "root-a",
+      "targets": "targets",
+      "snapshot": "snapshot",
+      "timestamp": "timestamp-1"
+    },
+    "root-v2": {
+      "root": "root-a",
+      "targets": "targets",
+      "snapshot": "snapshot",
+      "timestamp": "timestamp-2"
+    },
+    "root-v3": {
+      "root": "root-b",
+      "targets": "targets",
+      "snapshot": "snapshot",
+      "timestamp": "timestamp-2"
+    },
+    "delegated-root-v1": {
+      "root": "v2-root",
+      "targets": "targets",
+      "snapshot": "v2-snapshot",
+      "timestamp": "v2-timestamp"
+    },
+    "delegations": {
+      "pub-alpha": "pub-alpha",
+      "pub-beta": "pub-beta",
+      "pub-beta (threshold 2, delegated-threshold-not-met)": "pub-beta + pub-beta-2"
+    }
+  },
+  "times": {
+    "signed_at": "2026-11-15T00:00:00Z",
+    "now": "2026-11-16T00:00:00Z",
+    "timestamp_version": 1794700800
+  }
+}

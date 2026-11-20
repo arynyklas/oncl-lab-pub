@@ -1,0 +1,36 @@
+# The commits of the released SDK (oncl-pdk and the rest of the chain in docs/dev/sdk.md,
+# section 7) a publisher's plugin may depend on: the SDK is not on crates.io, a plugin names
+# https://github.com/arynyklas/OpenNCALayer as a git dependency with a release tag, and its
+# Cargo.lock pins the tag's commit, which must be listed here (check 17,
+# docs/design/publishers.md, Р44).
+#
+# The release process appends each new tag (`cargo xtask sdk revision add v<version>`,
+# docs/dev/release.md). An entry is never changed or removed; `vendor check-onboarding --base`
+# (index-check.yml) checks that each tag points to the commit of one of its entries. A tag
+# moved before its publication gets a second entry (run `sdk revision add` again); its
+# entries must hold the same SDK. The schema and its rules:
+# xtask/src/publishers/sdk_revisions.rs.
+#
+# [[revision]]
+# tag = "v<version>"            # the release tag
+# commit = "<40 lowercase hex>" # a commit it points (or pointed) to
+
+[[revision]]
+tag = "v0.1.0"
+commit = "e8848c89735717f25eef6bbaa2fd2d9bedf81314"
+
+[[revision]]
+tag = "v0.1.1"
+commit = "c30d2f1f05b7d6f443179c21b99eef5564c906c4"
+
+[[revision]]
+tag = "v0.1.2-beta.1"
+commit = "703c4facbed6425b0695e231188182086dcf217e"
+
+[[revision]]
+tag = "v0.1.2"
+commit = "cccfbb61274a8bdf715a3f72fcc65f3461218ef5"
+
+[[revision]]
+tag = "v0.1.2"
+commit = "26e30fdb07929bab3f740c3b36bebbb91741b5e8"

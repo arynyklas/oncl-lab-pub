@@ -1,0 +1,10 @@
+# The build context of the plugin builder (Dockerfile next to this file) is the repository;
+# oncl-pack needs the workspace's sources only, never build output or git data.
+.git
+.worktrees
+.venv-oracle
+target
+target-*
+**/target
+extension/sign/node_modules
+**/__pycache__

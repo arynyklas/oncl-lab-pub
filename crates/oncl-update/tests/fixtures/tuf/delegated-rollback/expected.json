@@ -1,0 +1,27 @@
+{
+  "name": "delegated-rollback",
+  "attack": "after pub-alpha version 2 was accepted, a newer timestamp and snapshot 2 list pub-alpha version 1",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "delegated-valid/metadata/1.root.json",
+  "prior_state": "client already accepted the 'delegated-valid' repository at the same clock",
+  "probes": [
+    "plugins/alpha/kz.alpha.signer/1.0.0.onclp",
+    "plugins/beta/kz.beta.tool/2.1.0.onclp"
+  ],
+  "contract": {
+    "refresh": "refused at the snapshot: rollback of pub-alpha.json",
+    "roles": {}
+  },
+  "changed_files_vs_delegated_valid": [
+    "metadata/1.pub-alpha.json",
+    "metadata/1.snapshot.json",
+    "metadata/2.pub-alpha.json",
+    "metadata/2.snapshot.json",
+    "metadata/timestamp.json"
+  ],
+  "python_tuf": {
+    "refresh": "BadVersionNumberError",
+    "error": "Expected pub-alpha.json version 1, got 2.",
+    "targets": {}
+  }
+}

@@ -1,0 +1,179 @@
+use oncl_pki::key::SigAlg;
+use oncl_pki::validation::ValidationPolicy;
+
+/// The implemented action family. New actions arrive with real implementations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Hash,
+    /// Hash and sign the document supplied to this operation.
+    Sign,
+    /// Explicit use of a caller-supplied digest, not a future format-sign action.
+    SignDigest,
+    /// Bounded existing CMS validation and host-only PKI transport.
+    Validate,
+    /// Source-based CMS signature and full host-policy verification.
+    Verify,
+    /// Structural CMS content extraction; never a verification assertion.
+    Extract,
+    /// Add and verify public CAdES evidence; never a private-key action.
+    Extend,
+    /// Read public metadata only; never authorizes a private application.
+    Inspect,
+    /// Request a remote TSA token; does not use a local private key.
+    Stamp,
+    VerifyStamp,
+}
+
+/// Authority supplied by a trusted host/authorizer, intentionally not Deserialize.
+#[derive(Clone, Debug)]
+pub struct ExecutionGrant {
+    hash: bool,
+    sign: bool,
+    sign_digest: bool,
+    validate: bool,
+    verify: bool,
+    extract: bool,
+    extend: bool,
+    inspect: bool,
+    stamp: bool,
+    verify_stamp: bool,
+    metadata_aliases: Vec<String>,
+    keys: Vec<crate::keys::KeyId>,
+    #[cfg(feature = "plugins")]
+    pub(crate) plugins: Option<std::sync::Arc<[crate::plugins::PluginPermission]>>,
+}
+impl ExecutionGrant {
+    pub fn new(actions: impl IntoIterator<Item = Action>) -> Self {
+        let mut grant = Self {
+            hash: false,
+            sign: false,
+            sign_digest: false,
+            keys: Vec::new(),
+            validate: false,
+            verify: false,
+            extract: false,
+            extend: false,
+            inspect: false,
+            stamp: false,
+            verify_stamp: false,
+            metadata_aliases: Vec::new(),
+            #[cfg(feature = "plugins")]
+            plugins: None,
+        };
+        for action in actions {
+            match action {
+                Action::Hash => grant.hash = true,
+                Action::Sign => grant.sign = true,
+                Action::SignDigest => grant.sign_digest = true,
+                Action::Validate => grant.validate = true,
+                Action::Verify => grant.verify = true,
+                Action::Extract => grant.extract = true,
+                Action::Extend => grant.extend = true,
+                Action::Inspect => grant.inspect = true,
+                Action::Stamp => grant.stamp = true,
+                Action::VerifyStamp => grant.verify_stamp = true,
+            }
+        }
+        grant
+    }
+    pub fn allows(&self, action: Action) -> bool {
+        match action {
+            Action::Hash => self.hash,
+            Action::Sign => self.sign,
+            Action::SignDigest => self.sign_digest,
+            Action::Validate => self.validate,
+            Action::Verify => self.verify,
+            Action::Extract => self.extract,
+            Action::Extend => self.extend,
+            Action::Inspect => self.inspect,
+            Action::Stamp => self.stamp,
+            Action::VerifyStamp => self.verify_stamp,
+        }
+    }
+    pub fn with_keys(mut self, keys: impl IntoIterator<Item = crate::keys::KeyId>) -> Self {
+        self.keys = keys.into_iter().collect();
+        self
+    }
+    pub fn allows_key(&self, key: &crate::keys::KeyId) -> bool {
+        self.keys.contains(key)
+    }
+    #[cfg(feature = "plugins")]
+    pub fn with_plugins(
+        mut self,
+        permissions: impl IntoIterator<Item = crate::plugins::PluginPermission>,
+    ) -> Self {
+        self.plugins = Some(permissions.into_iter().collect());
+        self
+    }
+    #[cfg(feature = "plugins")]
+    pub(crate) fn plugin_permissions(&self) -> &[crate::plugins::PluginPermission] {
+        self.plugins.as_deref().unwrap_or_default()
+    }
+    /// Exact host-authorized container aliases. No wildcard or client expansion.
+    pub fn with_metadata_aliases(
+        mut self,
+        aliases: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.metadata_aliases = aliases.into_iter().map(Into::into).collect();
+        self
+    }
+    pub(crate) fn metadata_aliases(&self) -> &[String] {
+        &self.metadata_aliases
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        #[cfg(feature = "plugins")]
+        if !self.plugin_permissions().is_empty() {
+            return false;
+        }
+        !self.hash
+            && !self.sign
+            && !self.sign_digest
+            && !self.validate
+            && !self.verify
+            && !self.extract
+            && !self.extend
+            && !self.inspect
+            && !self.stamp
+            && !self.verify_stamp
+    }
+}
+
+/// Owned host policy. Signature/validation settings are vocabulary for subsequent
+/// PKI operations, not fictitious validation performed by a hash operation.
+#[derive(Clone, Debug)]
+pub struct OperationPolicy {
+    pub validation: ValidationPolicy,
+    pub allowed_signature_algorithms: &'static [SigAlg],
+    pub allow_prehashed: bool,
+}
+impl OperationPolicy {
+    pub fn strict_online() -> Self {
+        Self {
+            validation: ValidationPolicy::StrictOnline,
+            allowed_signature_algorithms: &[
+                SigAlg::Gost2004,
+                SigAlg::Gost2015_512,
+                SigAlg::RsaSha256,
+            ],
+            allow_prehashed: false,
+        }
+    }
+    pub fn offline_report() -> Self {
+        Self {
+            validation: ValidationPolicy::OfflineReport,
+            ..Self::strict_online()
+        }
+    }
+    pub fn ncalayer_compatibility() -> Self {
+        Self {
+            validation: ValidationPolicy::NcalayerCompatibility,
+            allowed_signature_algorithms: &[
+                SigAlg::Gost2004,
+                SigAlg::Gost2015_512,
+                SigAlg::RsaSha256,
+                SigAlg::RsaSha1,
+            ],
+            allow_prehashed: false,
+        }
+    }
+}

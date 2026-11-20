@@ -1,0 +1,20 @@
+# Hostile texts: every one is printed escaped.
+name = "acme"
+state = "active"
+display = { ru = "ТОО «Акме» <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>", kk = "«Акме» ЖШС <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>", en = "Acme LLP <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>" }
+id_prefix = "kz.acme."
+modules = ["kz.acme.market.Signer", "kz.acme.sign.Signer"]
+bundles = ["kz.example.alpha", "kz.example.unported"]
+github = ["acme-release"]
+homepage = "https://acme.example/\"><script>alert(1)</script>"
+contact = "security@acme.example <script>alert(1)</script>"
+threshold = 1
+supersedes = { "io.github.arynyklas.openncalayer.port.alpha" = "kz.acme.market" }
+
+[[keys]]
+public = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+
+[[revoked_versions]]
+id = "kz.acme.market"
+version = "1.1.0"
+date = "2026-11-10"

@@ -1,0 +1,29 @@
+[package]
+name = "oncl-pdf"
+description = "Bounded streaming PDF signature (PAdES) reading and signing for OpenNCALayer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+keywords = ["pdf", "pades", "signature", "cades", "gost"]
+categories = ["cryptography", "parser-implementations"]
+include = ["/src/**", "/LICENSE", "/NOTICE"]
+
+[features]
+testing = ["oncl-pki/testing"]
+
+[dependencies]
+oncl-pki.workspace = true
+flate2.workspace = true
+thiserror.workspace = true
+der.workspace = true
+
+[dev-dependencies]
+oncl-pki = { workspace = true, features = ["testing"] }
+oncl-testkit.workspace = true
+lopdf.workspace = true
+time = { workspace = true, features = ["macros"] }
+tempfile.workspace = true
+x509-cert.workspace = true

@@ -1,0 +1,5 @@
+name = "gone"
+state = "revoked"
+revoked = "2026-10-01"
+display = { ru = "ТОО «Ушедший»", kk = "«Кеткен» ЖШС", en = "Gone LLP" }
+id_prefix = "kz.gone."

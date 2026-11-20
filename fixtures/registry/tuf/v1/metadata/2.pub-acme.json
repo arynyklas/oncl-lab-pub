@@ -1,0 +1,291 @@
+{
+  "signatures": [],
+  "signed": {
+    "_type": "targets",
+    "expires": "2027-11-01T00:00:00Z",
+    "spec_version": "1.0.31",
+    "targets": {
+      "plugins/acme/kz.acme.bidi/1.0.0.onclp": {
+        "length": 1000,
+        "hashes": {
+          "sha256": "3451251474e0276b96ee213c53a1873c2a2e875fbfcb0c7f3cae8d87dcf8eb17"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.bidi",
+            "version": "1.0.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-3451251474e0276b96ee213c53a1873c2a2e875fbfcb0c7f3cae8d87dcf8eb17/kz.acme.bidi-1.0.0.onclp",
+            "source": {
+              "archive_sha256": "67b0ca857ee8fafbf98a79dc16cdc9d7ea773a2da4b17b8a3e6823968551bb0f",
+              "archive_length": 1000,
+              "fetch": "https://downloads.acme.example/b.src.tar.gz",
+              "path": "",
+              "license": "MIT",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.sign.Signer"
+            ],
+            "name": {
+              "ru": "Подпись‮код",
+              "kk": "Қолтаңба",
+              "en": "Signing"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100
+          }
+        }
+      },
+      "plugins/acme/kz.acme.market/1.0.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "5ea6e6f589ccdadd2a54ef94863ea92e6ae24737aa6d35c50ea36b57c1a7e743"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.market",
+            "version": "1.0.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-5ea6e6f589ccdadd2a54ef94863ea92e6ae24737aa6d35c50ea36b57c1a7e743/kz.acme.market-1.0.0.onclp",
+            "source": {
+              "archive_sha256": "fb12ced69ddff6064a6528328d9361faa65c084eb95e786f8a9d3768e428ce8e",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.market-1.0.0.src.tar.gz",
+              "path": "crates/market",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794",
+              "vcs": {
+                "url": "https://git.acme.example/\"><script>alert(1)</script>",
+                "rev": "d1e75aca758154ee2147853c02ec6716f4a7ea04"
+              }
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.market.Signer"
+            ],
+            "name": {
+              "ru": "Маркет <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>",
+              "kk": "Маркет <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>",
+              "en": "Market <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>"
+            },
+            "capabilities": {
+              "keys": true,
+              "http": [
+                "https://api.acme.example/"
+              ]
+            },
+            "rollout": 100,
+            "replaces": {
+              "symname": "kz.example.alpha",
+              "version": "1.0"
+            }
+          }
+        }
+      },
+      "plugins/acme/kz.acme.market/1.1.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "3ebc3d96af4e34ae7d964df35e279ca9c455b813518e80761459dffb00a3c596"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.market",
+            "version": "1.1.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-3ebc3d96af4e34ae7d964df35e279ca9c455b813518e80761459dffb00a3c596/kz.acme.market-1.1.0.onclp",
+            "source": {
+              "archive_sha256": "a031f2b6fe35123d4e48c4da8b9b657523652fc297f9c0623ea3671ef19186e2",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.market-1.1.0.src.tar.gz",
+              "path": "it's;$(id)",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.market.Signer"
+            ],
+            "name": {
+              "ru": "Маркет <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>",
+              "kk": "Маркет <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>",
+              "en": "Market <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100,
+            "replaces": {
+              "symname": "kz.example.alpha",
+              "version": "1.0"
+            }
+          }
+        }
+      },
+      "plugins/acme/kz.acme.market/1.2.0-beta.1.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "ce15df196b9f0a656b542fec1df8aa19a4b46e4cc3dd16e25fff6087892ee9f8"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.market",
+            "version": "1.2.0-beta.1",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-ce15df196b9f0a656b542fec1df8aa19a4b46e4cc3dd16e25fff6087892ee9f8/kz.acme.market-1.2.0-beta.1.onclp",
+            "source": {
+              "archive_sha256": "c8ba01d82be48c540b5d3a0ec33e6ffe21bd8d69e143eacd31c25c717b6d0922",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.market-1.2.0-beta.1.src.tar.gz",
+              "path": "crates/market",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "beta",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.market.Signer"
+            ],
+            "name": {
+              "ru": "Маркет <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>",
+              "kk": "Маркет <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>",
+              "en": "Market <script>alert(1)</script> {{ config.base_url }} {% raw %} <img src=x onerror=alert(1)>"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 50,
+            "replaces": {
+              "symname": "kz.example.alpha",
+              "version": "1.0"
+            }
+          }
+        }
+      },
+      "plugins/acme/kz.acme.rogue/1.0.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "31811841e68985eed64582e57ff1a69406d3c4d09db48ba029eb9fcd573b592d"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.rogue",
+            "version": "1.0.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-31811841e68985eed64582e57ff1a69406d3c4d09db48ba029eb9fcd573b592d/kz.acme.rogue-1.0.0.onclp",
+            "source": {
+              "archive_sha256": "a7da9c0c6e064022fa6660ac35daf3d84292305ea8b9ce67b3536ffa4990b03a",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.rogue-1.0.0.src.tar.gz",
+              "path": "crates/market",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.other.Signer"
+            ],
+            "name": {
+              "ru": "Чужой",
+              "kk": "Бөгде",
+              "en": "Rogue"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100
+          }
+        }
+      },
+      "plugins/acme/kz.acme.sign/2.0.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "11e8717d792055e421e6bb74f7b7b05733afb03ff948ad53fd1b9828273f4476"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.sign",
+            "version": "2.0.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-11e8717d792055e421e6bb74f7b7b05733afb03ff948ad53fd1b9828273f4476/kz.acme.sign-2.0.0.onclp",
+            "source": {
+              "archive_sha256": "ef1fd92925b45b5a3f96077959858288e3de41e373f5008bf04e00e475c7dd42",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.sign-2.0.0.src.tar.gz",
+              "path": "",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.sign.Signer"
+            ],
+            "name": {
+              "ru": "Подпись Акме",
+              "kk": "Акме қолтаңбасы",
+              "en": "Acme signing"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100,
+            "replaces": {
+              "symname": "kz.example.unported",
+              "version": "2.0"
+            }
+          }
+        }
+      },
+      "plugins/acme/kz.acme.sign/2.1.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "dc055c480937d3352b035115a642895cbb1531cac29e00992d8f4b712f4a5187"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.acme.sign",
+            "version": "2.1.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-acme-dc055c480937d3352b035115a642895cbb1531cac29e00992d8f4b712f4a5187/kz.acme.sign-2.1.0.onclp",
+            "source": {
+              "archive_sha256": "c89bb5b1af5ef0d0b67fecf17a5ffafbf2d4e3ed1e0447ebe07858b75402f150",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.acme.example/kz.acme.sign-2.1.0.src.tar.gz",
+              "path": "crates/market",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.acme.sign.Signer"
+            ],
+            "name": {
+              "ru": "Подпись Акме",
+              "kk": "Акме қолтаңбасы",
+              "en": "Acme signing"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100,
+            "replaces": {
+              "symname": "kz.example.unported",
+              "version": "2.0"
+            },
+            "revoked": true
+          }
+        }
+      }
+    },
+    "version": 2
+  }
+}

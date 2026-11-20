@@ -1,0 +1,155 @@
+// The certificate installation dialog of importCertificate: the certificates, the folder of
+// their key files and the key files' new password.
+
+import { Button, CheckBox, ListView, Palette } from "std-widgets.slint";
+import { ActionBar, DialogScroll, EscapeScope, FieldLabel, Hint, Metrics, NameText, PathField, StatusArea, Subheading, TextField, Tone } from "common.slint";
+
+// A certificate to install.
+export struct CertItem {
+    title: string,
+    details: string,
+}
+
+export component ImportDialog inherits Window {
+    title: "OpenNCALayer";
+    always-on-top: true;
+    min-width: Metrics.form-min-width;
+    min-height: Metrics.min-height;
+    forward-focus: password-input;
+
+    // The requesting page's origin.
+    in property <string> origin;
+    in property <[CertItem]> certificates;
+    // The storage the page names.
+    in property <string> storage;
+    // Whether OpenNCALayer can write to it.
+    in property <bool> storage-supported;
+    in-out property <string> path;
+    in-out property <string> password;
+    in-out property <string> confirmation;
+    // Why the answer was refused.
+    in-out property <string> error;
+    // The buttons are inside the window, whatever the text and the scale.
+    out property <bool> actions-reachable: actions.inside(root.width, root.height);
+
+    callback browse();
+    callback confirm();
+    callback cancel();
+
+    private property <bool> can-confirm: root.storage-supported && !root.path.is-empty && !root.password.is-empty;
+
+    EscapeScope {
+        escape => {
+            root.cancel();
+        }
+        VerticalLayout {
+            padding: Metrics.pad;
+            spacing: Metrics.gap;
+            DialogScroll {
+                NameText {
+                    text: @tr("Request from: {}", root.origin);
+                }
+
+                Subheading {
+                    text: @tr("Certificate installation");
+                }
+
+                FieldLabel {
+                    text: @tr("Certificates to install");
+                }
+
+                ListView {
+                    min-height: 96px;
+                    preferred-height: 160px;
+                    for cert in root.certificates: VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        accessible-role: list-item;
+                        accessible-label: cert.title;
+                        accessible-description: cert.details;
+                        NameText {
+                            text: cert.title;
+                            font-weight: 700;
+                        }
+
+                        Text {
+                            text: cert.details;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: Metrics.gap;
+                    alignment: start;
+                    Text {
+                        text: @tr("Key storage");
+                    }
+
+                    NameText {
+                        text: root.storage;
+                        font-weight: 700;
+                        color: root.storage-supported ? Palette.foreground : Tone.quiet();
+                    }
+
+                    if !root.storage-supported: Text {
+                        text: @tr("not supported yet");
+                        font-italic: true;
+                        color: Tone.quiet();
+                    }
+                }
+
+                PathField {
+                    label: @tr("Key storage folder");
+                    text <=> root.path;
+                    browse => {
+                        root.browse();
+                    }
+                }
+
+                password-input := TextField {
+                    label: @tr("New password");
+                    secret: !show-password.checked;
+                    text <=> root.password;
+                }
+
+                TextField {
+                    label: @tr("Confirm password");
+                    secret: !show-password.checked;
+                    text <=> root.confirmation;
+                    accepted => {
+                        if (root.can-confirm) {
+                            root.confirm();
+                        }
+                    }
+                }
+
+                show-password := CheckBox {
+                    text: @tr("Show password");
+                }
+            }
+
+            if !root.error.is-empty: StatusArea {
+                message: root.error;
+                error: true;
+            }
+            actions := ActionBar {
+                Button {
+                    text: @tr("Confirm");
+                    primary: true;
+                    enabled: root.can-confirm;
+                    clicked => {
+                        root.confirm();
+                    }
+                }
+
+                Button {
+                    text: @tr("Cancel");
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+            }
+        }
+    }
+}

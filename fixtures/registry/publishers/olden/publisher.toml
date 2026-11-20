@@ -1,0 +1,9 @@
+name = "olden"
+state = "retired"
+display = { ru = "ИП «Былое»", kk = "«Бұрынғы» ЖК", en = "Olden IE" }
+id_prefix = "kz.olden."
+modules = ["kz.olden.tool.Signer"]
+github = ["olden-release"]
+
+[[keys]]
+public = "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394"

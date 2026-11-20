@@ -1,0 +1,270 @@
+[workspace]
+members = ["crates/*", "xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.3"
+edition = "2024"
+rust-version = "1.99.1"
+license = "Apache-2.0"
+repository = "https://github.com/arynyklas/oncl-lab-pub"
+publish = false
+
+[workspace.dependencies]
+# The accessory module's guest: the core embeds its WebAssembly; xtask reads its bundles.
+oncl-builtin-accessory = { path = "crates/oncl-builtin-accessory" }
+# The Applet module's guest: the core embeds its WebAssembly; its tests name it.
+oncl-builtin-applet = { path = "crates/oncl-builtin-applet" }
+# The basics module's guest: the core embeds its WebAssembly; its tests name it.
+oncl-builtin-basics = { path = "crates/oncl-builtin-basics" }
+# The commonUtils module's guest: the core embeds its WebAssembly; its tests name it.
+oncl-builtin-commonutils = { path = "crates/oncl-builtin-commonutils" }
+# The built-in modules' tests through the `Module` trait.
+oncl-builtin-tests = { path = "crates/oncl-builtin-tests" }
+# Builds the built-in modules' WebAssembly (the daemon's build script, xtask).
+oncl-builtins-build = { path = "crates/oncl-builtins-build" }
+oncl-core = { path = "crates/oncl-core" }
+oncl-desktop = { path = "crates/oncl-desktop" }
+# The SDK's packaged dependency chain (`xtask::sdk_delivery::CHAIN`, docs/dev/sdk.md section 7)
+# pins the exact workspace version: `cargo package` needs a `version` next to each `path`, and
+# it must be bumped together with `[workspace.package]`. These crates (and only these) set
+# `publish = true` in their manifests so that `cargo package` can verify the chain offline;
+# nothing uploads them: the SDK is never published to a registry, consumers and plugins take it
+# from this repository by a release tag (docs/dev/sdk.md section 1, docs/design/publishers.md Р44).
+# A test (`xtask/tests/sdk_delivery.rs`) keeps the set and its order.
+# The windows, key choice, page paths and page PINs the core gives modules and plugins.
+oncl-flows = { path = "crates/oncl-flows", version = "=0.1.3" }
+oncl-gost = { path = "crates/oncl-gost", version = "=0.1.3" }
+oncl-ipc = { path = "crates/oncl-ipc" }
+# The plugin builder: the canonical source archive and the reference build of a plugin
+# (`oncl-pack`, run by the builder image); xtask packs the ports with the same code.
+oncl-pack = { path = "crates/oncl-pack" }
+oncl-pki = { path = "crates/oncl-pki", version = "=0.1.3" }
+oncl-pdf = { path = "crates/oncl-pdf", version = "=0.1.3" }
+oncl-pdk = { path = "crates/oncl-pdk", version = "=0.1.3" }
+# Explicit defaults also keep inherited no-default SDK dependencies valid outside this workspace.
+oncl-plugin = { path = "crates/oncl-plugin", default-features = false, version = "=0.1.3" }
+oncl-protocol = { path = "crates/oncl-protocol", version = "=0.1.3" }
+oncl-registry = { path = "crates/oncl-registry", version = "=0.1.3" }
+oncl-testkit = { path = "crates/oncl-testkit" }
+oncl-tls = { path = "crates/oncl-tls" }
+oncl-token = { path = "crates/oncl-token", version = "=0.1.3" }
+oncl-trust = { path = "crates/oncl-trust" }
+oncl-ui = { path = "crates/oncl-ui" }
+oncl-update = { path = "crates/oncl-update", version = "=0.1.3" }
+# The installer entry WinGet runs: `xtask package` writes the Setup it carries into it.
+oncl-winget-setup = { path = "crates/oncl-winget-setup", default-features = false }
+oncl-xml = { path = "crates/oncl-xml", version = "=0.1.3" }
+
+aes = "0.9.0"
+anyhow = "1.0.104"
+# The optional HTTP API server and standalone host; absent from SDK/desktop closures.
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+base64 = "0.23.1"
+cbc = { version = "0.2.1", features = ["alloc", "block-padding"] }
+# The plugin ABI (`oncl-pdk`): arguments and results between the core and a plugin, as CBOR;
+# serde support of its own, no build script, builds for wasm32 too.
+ciborium = "0.2.2"
+clap = { version = "4.6.7", features = ["derive"] }
+# Streaming AES-GCM for CMS AuthEnvelopedData (CTR + GHASH; the `aes-gcm` crate is whole-buffer only).
+ctr = "0.10.1"
+crypto-bigint = { version = "0.7.7", default-features = false, features = ["alloc", "zeroize"] }
+# Unix prehashed RSA/OAEP only; TLS remains rustls/ring.
+aws-lc-rs = "=1.19.0"
+der = { version = "0.8.2", features = ["alloc", "derive", "oid", "zeroize"] }
+des = "0.9.0"
+# Gzip-compressed certificates on hardware tokens (`oncl-token`): the version and the pure-Rust
+# zlib-rs backend zip already brings, no second backend.
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
+futures-util = { version = "0.3.32", default-features = false, features = ["sink", "std"] }
+getrandom = "0.4.3"
+# GHASH of the streaming AES-GCM (see `ctr`).
+ghash = "0.6.0"
+gost94 = { version = "0.11.0", default-features = false }
+# The key index of org.json objects (`oncl-protocol`): entry numbers hashed by the keys they
+# point to, so no key is stored twice; already in the lock file, no features (std's hasher).
+hashbrown = { version = "0.17.1", default-features = false }
+hex-literal = "1.1.0"
+# Ordinary HMAC (PKCS#12 MACs, PBKDF2). The KDF HMAC of `oncl-gost::wrap` is its own code over
+# its secret-input Streebog (`crates/oncl-gost/src/secret_hmac.rs`). `zeroize` turns on
+# `digest/zeroize` for the whole graph: hash cores and block buffers wipe themselves on drop
+# (e.g. the PBKDF2 `Hmac<Sha256>` state of PKCS#12).
+hmac = { version = "0.13.0", features = ["zeroize"] }
+httparse = "1.10.1"
+# The tray on Linux (StatusNotifierItem over D-Bus, no GTK): zbus on async-io, like the AT-SPI
+# of Slint's winit backend; `blocking` runs the service in a thread of its own.
+ksni = { version = "0.3.7", default-features = false, features = ["async-io", "blocking"] }
+libc = "0.2.191"
+# `oncl-token` on Linux: libpcsclite opened at run time, so the program needs no pcsc-lite to
+# start; already in the lock file.
+libloading = "0.8.9"
+log = "0.4.34"
+# Only in the plugin port tests (`oncl-port-tests`): a PDF reader independent of the
+# Qoltanba port's writer, to count pages and read text back, and the source PDFs of the tests.
+lopdf = { version = "0.45.0", default-features = false }
+# The secret key file format of `cargo xtask tuf` (an Ed25519 key in a password-protected
+# minisign file).
+minisign = "0.10.0"
+# Fork of the proven multipart parser with an additive raw-framing observer (branch
+# `openncalayer/multer-3.1.0` of arynyklas/multer); the source is named here so that
+# independent API/server consumers receive the same required seam.
+multer = { version = "=3.1.0", git = "https://github.com/arynyklas/multer", rev = "70ed48587dd730bbeb5b55ec2617cae11760f9d0", default-features = false }
+# PE and ELF reading only: in xtask (`check-imports`, the glibc floor of the Linux packages)
+# and oncl-testkit (export tables of the Windows 7 app-local DLLs).
+object = { version = "0.40.0", default-features = false, features = ["read_core", "pe", "elf", "std"] }
+pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
+pkcs8 = { version = "0.11.0", features = ["alloc"] }
+# The tray icons (PNG files bundled into oncl-ui).
+png = "0.18.1"
+# Only in xtask (synthetic fixtures): `rsa` 0.9 and `rand_chacha` 0.3 share `rand_core` 0.6.
+rand_chacha = "0.3.1"
+rc2 = "0.9.0"
+raw-window-handle = "0.6.2"
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "crypto", "zeroize"] }
+# Only in xtask (`privacy`): the denylist entries and the scans of tracked text; already in the
+# lock file through other crates.
+regex = "1.13.1"
+rfd = "0.17.2"
+ring = "0.17.14"
+# XMLDSig: the XML tree with byte positions (the signature is spliced into the input bytes).
+roxmltree = "0.21.2"
+# Only in xtask (`tuf`): passphrases read without echo; minisign already depends on it.
+rpassword = "7.5.4"
+# Production RSA generation/decoding/public operations; synthetic fixture/emulator private operations only.
+rsa = { version = "0.9.10", features = ["sha2"] }
+# oncl-trust on Linux: read-only `cert9.db` (NSS) presence check without `certutil`.
+rusqlite = { version = "0.41.0", default-features = false, features = ["bundled"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-webpki = { version = "0.103.16", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0.229", features = ["derive"] }
+# The plugin ABI: byte strings as CBOR byte strings, not arrays of integers.
+serde_bytes = "0.11.19"
+serde_json = "1.0.154"
+# oncl-trust on macOS: SecTrust and the trust settings.
+security-framework = "3.7.0"
+# Versions of the update index (`oncl-update`) and of plugins (`oncl-plugin`).
+semver = { version = "1.0.28", features = ["serde"] }
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+# `~`: oncl-ui uses `unstable-winit-030`, which may change in a minor release.
+slint = { version = "~1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "accessibility"] }
+slint-build = "~1.18.1"
+spki = { version = "0.8.1", features = ["alloc"] }
+# Public-document hashing. Secret input (VKO shared point, KDF key blocks) goes through the
+# secret-input Streebog of `oncl-gost` (`crates/oncl-gost/src/streebog_secret.rs`).
+streebog = { version = "0.11.0", default-features = false, features = ["zeroize"] }
+# Constant-time selection of the secret-input Streebog of `oncl-gost`. Pinned: its selection
+# code was reviewed in optimized builds at this version.
+subtle = { version = "=2.6.1", default-features = false }
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+time = "0.3.55"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "io-util", "time"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+# `tracing-log`: messages of `log`-based crates (rfd, winit, rustls) reach the log files.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "tracing-log"] }
+# The tray on Windows and macOS (its menus are `muda`, re-exported as `tray_icon::menu`).
+# Default features are Linux only (libappindicator and GTK).
+# Pinned: the Windows balloons (crates/oncl-ui/src/tray/balloon.rs) rely on tray-icon's
+# private callback message (6002) and its icon id counter; check both before an upgrade.
+tray-icon = { version = "=0.26.1", default-features = false }
+# Only in xtask (`ext-e2e`): the stand-in original NCALayer, a blocking WebSocket server.
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+# `~`: `xtask/src/upstream/http.rs` uses `ureq::unversioned` (its resolver and connector),
+# which may break in a minor release.
+ureq = { version = "~3.5.0", default-features = false, features = ["rustls"] }
+# `oncl-plugin`: the URL prefixes a plugin may reach, parsed as browsers parse URLs; Velopack
+# depends on it already.
+url = "2.5.8"
+# The core's self-update (`openncalayer`): applies the packages the signed update index
+# names. Velopack's versions carry a commit suffix. No file logging of its own;
+# `public-utils` only makes public the app manifest type a custom `UpdateSource` takes.
+velopack = { version = "1.3.39-g8d2844f", default-features = false, features = ["public-utils"] }
+# The About window's repository link in the default browser; Slint's winit backend uses it
+# already.
+webbrowser = "1.2.5"
+# Conformance builds only (`oncl-pki` feature `extra-roots`): the webpki roots as
+# certificates, so that an extra CA can join them.
+webpki-root-certs = "1.0.11"
+windows-sys = "0.61.2"
+# The plugin runtime (`oncl-plugin`): a WebAssembly interpreter, pure Rust, with fuel metering
+# and memory limits, no JIT (no executable memory, so it runs where a JIT may not, Windows 7
+# included). Only the features the runtime needs; `portable-dispatch`: Wasmi's default
+# dispatch by tail calls relies on the compiler turning them into jumps, which it does not
+# in unoptimized builds nor on Windows x64 (whose calling convention passes the handlers'
+# arguments on the stack), and a long guest loop then overflows the native stack.
+wasmi = { version = "2.0.0", default-features = false, features = ["std", "validate", "portable-dispatch"] }
+# The `LimiterError` of wasmi's `ResourceLimiter`, which `wasmi` does not re-export: `oncl-plugin`'s memory limiter implements the trait.
+wasmi_core = { version = "2.0.0", default-features = false }
+# Only in the `oncl-plugin` tests: guests written as WebAssembly text.
+wat = "1.262.0"
+x509-cert = "0.3.0"
+# Only in oncl-ui on Linux: desktop notifications over the session bus; the zbus that ksni
+# already brings, with its blocking API.
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+zeroize = "1.9.1"
+# xtask (`ext build`: the extension zip/xpi), oncl-update (the files of an update package)
+# and oncl-plugin (the plugin packages), deflate through pure-Rust zlib-rs.
+zip = { version = "9.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[patch.crates-io]
+# Forks of the crates.io packages with one change each, pinned by commit (`rev`); the change
+# and its upstream commit are in the fork branch named in each comment. A Slint, Velopack or
+# multer upgrade means rebasing that branch and moving the `rev`.
+#
+# `SystemParametersInfoForDpi` (Windows 10 1607+) is looked up at run time instead of
+# imported, so the Windows 7 builds start. The version must stay the one `slint` locks.
+# Branch `openncalayer/i-slint-backend-winit-1.18.1` of arynyklas/slint.
+i-slint-backend-winit = { git = "https://github.com/arynyklas/slint", rev = "586d17da44c6e997d37a5865b20c3e8d344e87bf" }
+
+# A full package already on disk or rebuilt from deltas is checked by the update source before
+# it is used and before Update.exe is taken from it. The version must stay the one above.
+# Branch `openncalayer/velopack-1.3.39-g8d2844f` of arynyklas/velopack. Upstream plans to stop
+# keeping packages on disk and to drop this verify step (velopack/velopack#1175): on that
+# upgrade the contents check (`IndexSource::verify_full_package`) must move to wherever
+# Velopack then reads the package, still before the new Update.exe runs.
+velopack = { git = "https://github.com/arynyklas/velopack", rev = "e2c8d73c368ce0383a547ed5f3dfece42f98ac72" }
+
+# RSA key generation (`oncl-pki::keygen` and its tests, `cargo xtask gen-fixtures` and the
+# xtask tests) is very slow unoptimized.
+[profile.dev.package.rsa]
+opt-level = 3
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+# The scrypt of the minisign secret key files of `cargo xtask tuf` (and its tests) takes seconds
+# unoptimized.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+# GOST 34.11-2015 hashing of the 40 MiB document makes the openncalayer e2e test take over a
+# minute and a half unoptimized, a few seconds optimized.
+[profile.dev.package.streebog]
+opt-level = 3
+# GOST 34.10 operations (512-bit curves) take about 0.1 s each unoptimized; the PKIX, OCSP and
+# CRL tests verify many signatures.
+[profile.dev.package.oncl-gost]
+opt-level = 3
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+# The XMLDSig limit tests parse 50 MiB of XML; unoptimized parsing takes several seconds.
+[profile.dev.package.roxmltree]
+opt-level = 3
+# The plugin tests run guests of millions of instructions (the example plugin parses JSON and
+# CBOR).
+[profile.dev.package.wasmi]
+opt-level = 3
+
+# The built-in modules' WebAssembly (`oncl-builtins-build`): small, one unit, no unwinding.
+[profile.builtin-wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true

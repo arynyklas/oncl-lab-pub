@@ -1,0 +1,126 @@
+# The CMS envelope profiles of oncl and the evidence for each (crates/oncl-pki
+# src/cms/envelope, docs/dev/platform-interop.md). Only a profile that an independent tool
+# produced AND consumed appears under `rsa_envelope_profile`. A registry label or a Russian
+# primitive vector is not a KZ profile: nothing below authorizes a KZ GOST envelope, and
+# `kz_envelope_profiles` stays empty until a profile is proven by Kalkan output
+# (see `[[kz_gost_blocker]]`).
+schema_version = 1
+kz_envelope_profiles = []
+
+[[rsa_envelope_profile]]
+id = "rsa-oaep-sha256-aes256-gcm"
+structure = "AuthEnvelopedData (1.2.840.113549.1.9.16.1.23), version 0, no authAttrs"
+recipient_key_oid = "1.2.840.113549.1.1.1"
+key_transport = "RSAES-OAEP 1.2.840.113549.1.1.7, hash 2.16.840.1.101.3.4.2.1 (SHA-256), MGF1 1.2.840.113549.1.1.8 with SHA-256, empty label, KeyTransRecipientInfo v0 with issuerAndSerialNumber"
+content_cipher = "id-aes256-GCM 2.16.840.1.101.3.4.1.46, GCMParameters {96-bit nonce, aes-ICVlen 16}, tag in MessageAuthenticationCode, no AAD"
+recipient_key_usage = "keyEncipherment when the extension is present; extendedKeyUsage, when present, names emailProtection or anyExtendedKeyUsage"
+encoding = "definite-length DER when the plaintext length is known, else BER with indefinite lengths and OCTET STRING segments of at most 64 KiB; both are read"
+integrity = "authenticated: no plaintext is released as valid before the 16-byte tag verifies"
+oracle = "openssl cms 3.0.13 decrypts oncl's messages and oncl decrypts openssl cms -encrypt -aes-256-gcm with OAEP keyopts (DER and -stream), both with two recipients up to 3 MiB; OpenSSL refuses a changed tag or ciphertext byte"
+oracle_rows = ["envelope-openssl-opens-ours-rsa-oaep", "envelope-ours-opens-openssl-rsa-oaep"]
+primitive_vectors = "AES-GCM exact vectors of the GCM specification test cases 2, 3, 13, 14, 15 (crates/oncl-pki cipher unit tests)"
+
+[[rsa_envelope_profile]]
+id = "rsa-oaep-sha256-aes256-cbc"
+structure = "EnvelopedData (1.2.840.113549.1.7.3), version 0"
+recipient_key_oid = "1.2.840.113549.1.1.1"
+key_transport = "as rsa-oaep-sha256-aes256-gcm"
+content_cipher = "id-aes256-CBC 2.16.840.1.101.3.4.1.42, 128-bit IV parameter, PKCS#7 padding"
+recipient_key_usage = "as rsa-oaep-sha256-aes256-gcm"
+encoding = "as rsa-oaep-sha256-aes256-gcm"
+integrity = "NONE: reported as unauthenticated; a changed ciphertext is not detected"
+oracle = "openssl cms 3.0.13 both directions (AES-128/192/256-CBC read, AES-256-CBC written), two recipients, up to 3 MiB, DER and -stream"
+oracle_rows = ["envelope-openssl-opens-ours-rsa-oaep", "envelope-ours-opens-openssl-rsa-oaep"]
+primitive_vectors = "AES-128-CBC exact vector of NIST SP 800-38A F.2.1 (cipher unit tests)"
+
+# Read only, behind DecryptOptions::allow_legacy; never written.
+[[rsa_legacy_profile]]
+id = "rsa-pkcs1-v15-any-content"
+key_transport = "rsaEncryption 1.2.840.113549.1.1.1 (RSAES-PKCS1-v1_5), RFC 3218 random-key fallback on a failed unwrap"
+content_cipher = "AES-128/192/256-CBC, AES-128/192/256-GCM, DES-EDE3-CBC 1.2.840.113549.3.7"
+oracle = "openssl cms -encrypt default key transport (AES-CBC and AES-GCM) and Kalkan CMSEnvelopedDataGenerator (the only RSA envelope it writes: DES-EDE3-CBC), both decrypted by oncl"
+oracle_rows = ["envelope-ours-opens-openssl-rsa-pkcs1-legacy", "envelope-ours-opens-kalkan-rsa-3des-legacy"]
+
+# The evidence that no KZ GOST profile is proven (kalkancrypt 0.7.8, the provider of the
+# installed NCALayer; reproducible locally with the row envelope-kalkan-gost-refused).
+[[kz_gost_blocker]]
+id = "kalkan-has-no-gost-cms-envelope"
+tool = "kalkancrypt 0.7.8 (kz.gov.pki.kalkan.jce.provider.cms)"
+findings = [
+  "the provider registers no KeyAgreement of any kind (ECDH, ECDHC, ECGOST3410*, VKO): addKeyAgreementRecipient fails with NoSuchAlgorithm even for plain EC",
+  "CMSEnvelopedHelper maps only DES-EDE3-CBC and AES-128/192/256-CBC; the GOST 28147 cipher exists as an engine but the CMS layer has no content-cipher name for 1.2.643.2.2.21 or 1.2.398.3.10.1.2.1 (NoSuchAlgorithm / KeyGenerator not available)",
+  "addKeyTransRecipient with a GOST 2015-512 or GOST 2004 certificate fails: error making encrypted content (key transport is RSAES-PKCS1-v1_5 only)",
+  "there is no AuthEnvelopedData class",
+  "no other NCALayer bundle contains a CMS envelope implementation (only Santuario XML Encryption and an unrelated PBE helper)",
+]
+missing = "a tool that writes AND reads a KZ GOST CMS envelope (recipient key OID, key agreement or transport, wrap, content cipher, parameters): Kalkan output of a KZ GOST profile, or a KZ NCA specification with test vectors"
+status = "no KZ GOST profile is claimed; RFC 7836 primitive vectors below are not KZ profile interoperability"
+
+[[primitive_vector]]
+id = "rfc7836-vko-2012-256-tc26-512-a"
+status = "published-exact-vector-verified"
+source = "https://www.rfc-editor.org/rfc/rfc7836#appendix-B"
+example = 7
+curve = "id-tc26-gost-3410-12-512-paramSetA"
+digest = "GOST-R-34.11-2012-256"
+public_encoding = "X_LE_64 || Y_LE_64"
+ukm_hex = "1d80603c8544c727"
+expected_kek_hex = "c9a9a77320e2cc559ed72dce6f47e2192ccea95fa648670582c054c0ef36c221"
+oracle = "RFC7836 B7 exact bytes verified on Windows and Linux; not KZ profile interoperability"
+
+[[primitive_vector]]
+id = "rfc7836-vko-2012-512-tc26-512-a"
+status = "published-exact-vector-verified"
+source = "https://www.rfc-editor.org/rfc/rfc7836#appendix-B"
+example = 8
+curve = "id-tc26-gost-3410-12-512-paramSetA"
+digest = "GOST-R-34.11-2012-512"
+public_encoding = "X_LE_64 || Y_LE_64"
+ukm_hex = "1d80603c8544c727"
+expected_kek_hex = "79f002a96940ce7bde3259a52e015297adaad84597a0d205b50e3e1719f97bfa7ee1d2661fa9979a5aa235b558a7e6d9f88f982dd63fc35a8ec0dd5e242d3bdf"
+oracle = "RFC7836 B8 exact bytes verified on Windows and Linux; not KZ profile interoperability"
+
+[[primitive_vector]]
+id = "rfc7836-wrap-tc26-z"
+status = "published-exact-vector-verified"
+source = "https://www.rfc-editor.org/rfc/rfc7836#section-4.6"
+example_source = "https://www.rfc-editor.org/rfc/rfc7836#appendix-B"
+example = 11
+cipher_parameter_oid = "1.2.643.7.1.2.5.1.1"
+kdf = "KDF_GOSTR3411_2012_256"
+label_hex = "26bdb878"
+seed_hex = "af21434145656378"
+encoding = "seed || CEK_ENC_32 || CEK_MAC_4"
+expected_wrapped_hex = "af21434145656378d15547f8ee85121bc87d4b1027d26027ecc071bba6e72f3fec6f620f56834c5abe33f052"
+oracle = "RFC7836 B11 exact bytes verified on Windows and Linux; independent Kalkan ECB and CBC-MAC-equivalent bytes match, native KZ profile not proven"
+
+# Primary KZ registry labels ONLY: parameters/encodings/mechanisms not specified
+# by the registry cannot be filled by analogy with Russian cryptographic OIDs.
+[[registered_algorithm]]
+id = "kz-gost2004-signing-key"
+oid = "1.2.398.3.10.1.1.1.1"
+parameter_a_oid = "1.2.398.3.10.1.1.1.1.1"
+source = "https://root.gov.kz/oid/"
+status = "registry-identity-only-not-envelope-profile"
+
+[[registered_algorithm]]
+id = "kz-gost2015-512-signing-key"
+oid = "1.2.398.3.10.1.1.2.2"
+parameter_a_oid = "1.2.398.3.10.1.1.2.2.1"
+source = "https://root.gov.kz/oid/"
+status = "registry-identity-only-not-envelope-profile"
+
+[[registered_algorithm]]
+id = "kz-gost2015-512-agreement-key"
+oid = "1.2.398.3.10.1.4.1.2"
+parameter_a_oid = "1.2.398.3.10.1.4.1.2.1"
+source = "https://root.gov.kz/oid/?oid=1.2.398.3.10.1.4.1.2"
+status = "registry-identity-only-not-envelope-profile"
+
+[[registered_algorithm]]
+id = "kz-gost28147-encryption"
+oid = "1.2.398.3.10.1.2.1"
+parameter_test_oid = "1.2.398.3.10.1.2.1.1.0"
+parameter_a_oid = "1.2.398.3.10.1.2.1.1.1"
+source = "https://root.gov.kz/oid/?oid=1.2.398.3.10.1.2.1"
+status = "registry-identity-only-not-envelope-profile"

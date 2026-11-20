@@ -1,0 +1,594 @@
+# Russian texts of the OpenNCALayer dialogs (the @tr strings of crates/oncl-ui/ui).
+msgid ""
+msgstr ""
+"Project-Id-Version: oncl-ui\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+
+msgid "Request from: {}"
+msgstr "Запрос от: {}"
+
+msgid "Action: signing"
+msgstr "Действие: подпись"
+
+msgid "Action: authentication"
+msgstr "Действие: аутентификация"
+
+msgid "Key storage"
+msgstr "Хранилище ключей"
+
+msgid "not supported yet"
+msgstr "пока не поддерживается"
+
+msgid "Key store file"
+msgstr "Файл хранилища"
+
+msgid "Browse…"
+msgstr "Обзор…"
+
+msgid "Password"
+msgstr "Пароль"
+
+msgid "Show password"
+msgstr "Показать пароль"
+
+msgid "Open"
+msgstr "Открыть"
+
+msgid "Cancel"
+msgstr "Отмена"
+
+msgid "Close"
+msgstr "Закрыть"
+
+msgid "Choose a key"
+msgstr "Выберите ключ"
+
+msgid "No suitable key found"
+msgstr "Подходящий ключ не найден"
+
+msgid "Checking the certificate status…"
+msgstr "Проверка статуса сертификата…"
+
+msgid "Opening the key store…"
+msgstr "Открываем хранилище…"
+
+msgid "Sign"
+msgstr "Подписать"
+
+msgid "Certificate request"
+msgstr "Запрос на выпуск сертификата"
+
+msgid "Key storage folder"
+msgstr "Папка хранения ключа"
+
+msgid "Confirm password"
+msgstr "Подтверждение пароля"
+
+msgid "Confirm"
+msgstr "Подтвердить"
+
+msgid "Certificate installation"
+msgstr "Установка сертификата"
+
+msgid "Certificates to install"
+msgstr "Устанавливаемые сертификаты"
+
+msgid "New password"
+msgstr "Новый пароль"
+
+msgid "Action: key information"
+msgstr "Действие: информация о ключе"
+
+msgid "Send"
+msgstr "Отправить"
+
+msgid "Enter the key store password:"
+msgstr "Введите пароль на хранилище ключей:"
+
+msgid "OK"
+msgstr "OK"
+
+msgid "OpenNCALayer settings"
+msgstr "Настройки OpenNCALayer"
+
+msgid "General"
+msgstr "Общие"
+
+msgid "Language"
+msgstr "Язык"
+
+msgid "As in the system"
+msgstr "Как в системе"
+
+msgid "Start at login"
+msgstr "Запускать при входе в систему"
+
+msgid "Proxy for time stamps, OCSP and CRL"
+msgstr "Прокси для меток времени, OCSP и CRL"
+
+msgid "No proxy"
+msgstr "Без прокси"
+
+msgid "System proxy"
+msgstr "Системный прокси"
+
+msgid "This proxy:"
+msgstr "Указанный прокси:"
+
+msgid "HTTP proxies only; SOCKS is not supported."
+msgstr "Только HTTP-прокси; SOCKS не поддерживается."
+
+msgid "Updates"
+msgstr "Обновления"
+
+msgid "Update automatically"
+msgstr "Обновлять автоматически"
+
+msgid "Check plugin revocations"
+msgstr "Проверять отзывы плагинов"
+
+msgid "Included in automatic updates"
+msgstr "Входит в автообновления"
+
+msgid "Every few hours OpenNCALayer contacts arynyklas.github.io and turns off the plugins their publisher or OpenNCALayer revoked. No new versions are installed by it."
+msgstr "Раз в несколько часов OpenNCALayer обращается к arynyklas.github.io и выключает плагины, которые отозвал их издатель или OpenNCALayer. Новые версии при этом не устанавливаются."
+
+msgid "Channel"
+msgstr "Канал"
+
+msgid "Stable"
+msgstr "Стабильный"
+
+msgid "Beta"
+msgstr "Бета"
+
+msgid "Check now"
+msgstr "Проверить сейчас"
+
+msgid "Save"
+msgstr "Сохранить"
+
+msgid "Original NCALayer"
+msgstr "Оригинальный NCALayer"
+
+msgid "Disable the original's autostart"
+msgstr "Отключить автозапуск оригинала"
+
+msgid "Restore the original"
+msgstr "Вернуть оригинал"
+
+msgid "Browser extension"
+msgstr "Расширение браузера"
+
+msgid "Register"
+msgstr "Зарегистрировать"
+
+msgid "Remove"
+msgstr "Удалить"
+
+msgid "About OpenNCALayer"
+msgstr "О программе OpenNCALayer"
+
+msgid "Version {} (commit {})"
+msgstr "Версия {} (коммит {})"
+
+msgid "Licensed under the Apache License, Version 2.0."
+msgstr "Лицензия: Apache License, Version 2.0."
+
+msgid "Modules"
+msgstr "Модули"
+
+msgid "Bundles (getBundles)"
+msgstr "Бандлы (getBundles)"
+
+msgid "Modules of the daemon"
+msgstr "Модули демона"
+
+msgid "Plugins are installed, turned off and removed in the Plugins window of the tray menu."
+msgstr "Плагины устанавливаются, выключаются и удаляются в окне «Плагины» меню значка в трее."
+
+msgid "Third-party licences"
+msgstr "Сторонние лицензии"
+
+msgid "Certificate for browsers"
+msgstr "Сертификат для браузера"
+
+msgid "Status"
+msgstr "Состояние"
+
+msgid "Trust (read only)"
+msgstr "Доверие (только чтение)"
+
+msgid "Check again"
+msgstr "Проверить снова"
+
+msgid "Source"
+msgstr "Источник"
+
+msgid "Create my own certificate"
+msgstr "Создать свой"
+
+msgid "Use mkcert"
+msgstr "Использовать mkcert"
+
+msgid "My own certificate (import)"
+msgstr "Свой сертификат (импорт)"
+
+msgid "OpenNCALayer creates a local CA that can only certify 127.0.0.1, ::1 and localhost, issues the certificate and destroys the CA's key at once. Install the new CA on the «Installation» tab."
+msgstr "OpenNCALayer создаёт локальный центр сертификации, который может подтверждать только 127.0.0.1, ::1 и localhost, выпускает сертификат и сразу уничтожает ключ центра сертификации. Новый центр сертификации установите на вкладке «Установка»."
+
+msgid "I agree that OpenNCALayer reads the mkcert CA key rootCA-key.pem at every renewal (it is never copied). Untick to withdraw the consent."
+msgstr "Я согласен, что OpenNCALayer читает ключ центра mkcert rootCA-key.pem при каждом перевыпуске (ключ никуда не копируется). Снимите флажок, чтобы отозвать согласие."
+
+msgid "A certificate for 127.0.0.1 with serverAuth, ECDSA P-256/P-384 or RSA of 2048 bits and more, not signed with SHA-1, and its key (PEM)."
+msgstr "Сертификат для 127.0.0.1 с serverAuth, ключом ECDSA P-256/P-384 или RSA от 2048 бит, не подписанный SHA-1, и его ключ (PEM)."
+
+msgid "Certificate chain (PEM)"
+msgstr "Цепочка сертификатов (PEM)"
+
+msgid "Private key (PEM)"
+msgstr "Закрытый ключ (PEM)"
+
+msgid "Use this certificate"
+msgstr "Использовать этот сертификат"
+
+msgid "Issue the certificate"
+msgstr "Выпустить сертификат"
+
+msgid "Installation"
+msgstr "Установка"
+
+msgid "Install my CA into the user's store"
+msgstr "Установить мой CA в хранилище пользователя"
+
+msgid "Download and install the NCA roots"
+msgstr "Скачать и установить корни НУЦ"
+
+msgid "Remove the NCA roots"
+msgstr "Удалить корни НУЦ"
+
+msgid "Remove the old one"
+msgstr "Удалить старый"
+
+msgid "Check"
+msgstr "Проверка"
+
+msgid "Open the self-test page in each browser you use. A browser that opened the page and ran it appears in the list below. Only a page that opened without a certificate warning means the browser trusts the certificate: if you clicked through a warning, the browser is listed but does not trust it."
+msgstr "Откройте страницу самопроверки в каждом браузере, которым пользуетесь. Браузер, открывший страницу, появится в списке ниже. Доверие подтверждает только страница, открывшаяся без предупреждения о сертификате: если вы прошли предупреждение («Перейти на сайт», «Принять риск»), браузер попадёт в список, но сертификату не доверяет."
+
+msgid "Open the check in the browser"
+msgstr "Открыть проверку в браузере"
+
+msgid "No browser has opened the page yet."
+msgstr "Ни один браузер ещё не открыл страницу."
+
+msgid "Yes"
+msgstr "Да"
+
+msgid "Stop the original NCALayer"
+msgstr "Остановить оригинальный NCALayer"
+
+msgid "Stop"
+msgstr "Остановить"
+
+msgid "Plugin: {}"
+msgstr "Плагин: {}"
+
+msgid "Information"
+msgstr "Сообщение"
+
+msgid "Warning"
+msgstr "Предупреждение"
+
+msgid "Error"
+msgstr "Ошибка"
+
+msgid "No"
+msgstr "Нет"
+
+msgid "Save the file: {}"
+msgstr "Сохранить файл: {}"
+
+msgid "Plugin installation"
+msgstr "Установка плагина"
+
+msgid "Install"
+msgstr "Установить"
+
+msgid "Plugins"
+msgstr "Плагины"
+
+msgid "Installed"
+msgstr "Установленные"
+
+msgid "No plugins are installed."
+msgstr "Плагины не установлены."
+
+msgid "Turn off"
+msgstr "Выключить"
+
+msgid "Turn on"
+msgstr "Включить"
+
+msgid "Available in the catalog"
+msgstr "Доступные в каталоге"
+
+msgid "The catalog offers no other plugins."
+msgstr "Других плагинов в каталоге нет."
+
+msgid "Install…"
+msgstr "Установить…"
+
+msgid "Install from file…"
+msgstr "Установить из файла…"
+
+msgid "Refresh the catalog"
+msgstr "Обновить каталог"
+
+msgid "Reader"
+msgstr "Считыватель"
+
+msgid "Refresh"
+msgstr "Обновить"
+
+msgid "Token support is experimental: checked on an emulator only"
+msgstr "Поддержка токенов экспериментальная: проверена только на эмуляторе"
+
+msgid "PIN code"
+msgstr "PIN-код"
+
+msgid "Key storage selection"
+msgstr "Выбор хранилища ключа"
+
+msgid "Storage type: {}"
+msgstr "Тип хранилища: {}"
+
+msgid "Choose"
+msgstr "Выбрать"
+
+msgid "Tokens and ID cards (experimental)"
+msgstr "Токены и удостоверение личности (экспериментально)"
+
+msgid "Sites will see the connected tokens and the ID card's details without asking, as with the original NCALayer."
+msgstr "Сайты смогут видеть подключённые носители и данные удостоверения личности без запроса, как в оригинальном NCALayer"
+
+msgid "Allow the update"
+msgstr "Разрешить обновление"
+
+msgid "Replace…"
+msgstr "Заменить…"
+
+msgid "OpenNCALayer tools"
+msgstr "Инструменты OpenNCALayer"
+
+msgid "Overview"
+msgstr "Обзор"
+
+msgid "Hash"
+msgstr "Хеш"
+
+msgid "Inspect"
+msgstr "Сведения"
+
+msgid "Tools"
+msgstr "Инструменты"
+
+msgid "This window opens when you ask for it: from the tray menu or with «openncalayer tools». Sites that ask for a signature get their own window and do not open this one."
+msgstr "Это окно открывается по вашей просьбе: из меню в области уведомлений или командой «openncalayer tools». Сайты, которые просят подпись, получают своё окно и это не открывают."
+
+msgid "Hash a file"
+msgstr "Хеш файла"
+
+msgid "File"
+msgstr "Файл"
+
+msgid "Path to the file"
+msgstr "Путь к файлу"
+
+msgid "Algorithm"
+msgstr "Алгоритм"
+
+msgid "Compute the hash"
+msgstr "Вычислить хеш"
+
+msgid "Digest"
+msgstr "Значение хеша"
+
+msgid "What to inspect"
+msgstr "Что показать"
+
+msgid "Certificate"
+msgstr "Сертификат"
+
+msgid "Signature file"
+msgstr "Файл подписи"
+
+msgid "Key store (PKCS#12, JKS)"
+msgstr "Хранилище ключей (PKCS#12, JKS)"
+
+msgid "Tokens and ID cards"
+msgstr "Токены и ID-карты"
+
+msgid "Key names to show (separated by commas)"
+msgstr "Имена ключей, которые показать (через запятую)"
+
+msgid "Show details"
+msgstr "Показать сведения"
+
+msgid "Details"
+msgstr "Сведения"
+
+msgid "GOST R 34.11-94"
+msgstr "ГОСТ Р 34.11-94"
+
+msgid "GOST R 34.11-2012 (512)"
+msgstr "ГОСТ Р 34.11-2012 (512)"
+
+msgid "Sign documents"
+msgstr "Подписать документы"
+
+msgid "Documents to sign"
+msgstr "Документы для подписи"
+
+msgid "Add"
+msgstr "Добавить"
+
+msgid "Recent"
+msgstr "Недавние"
+
+msgid "Forget recent and favourites"
+msgstr "Забыть недавние и избранное"
+
+msgid "Continue"
+msgstr "Далее"
+
+msgid "Clear documents"
+msgstr "Очистить документы"
+
+msgid "Password of the key store"
+msgstr "Пароль хранилища ключей"
+
+msgid "Open key store"
+msgstr "Открыть хранилище"
+
+msgid "Back"
+msgstr "Назад"
+
+msgid "Choose the certificate"
+msgstr "Выберите сертификат"
+
+msgid "Show the confirmation"
+msgstr "Показать подтверждение"
+
+msgid "Documents (names are as given, not checked)"
+msgstr "Документы (имена как заданы, не проверялись)"
+
+msgid "New signing"
+msgstr "Новая подпись"
+
+msgid "Recent key stores"
+msgstr "Недавние хранилища"
+
+msgid "Add a signature to a document that is already signed"
+msgstr "Добавить подпись к уже подписанному документу"
+
+msgid "B: basic"
+msgstr "B: базовый"
+
+msgid "CMS / CAdES (signature file)"
+msgstr "CMS / CAdES (файл подписи)"
+
+msgid "Documents"
+msgstr "Документы"
+
+msgid "Element that gets the signature (XML ID)"
+msgstr "Элемент, в который помещается подпись (XML ID)"
+
+msgid "Element to sign (XML ID)"
+msgstr "Подписываемый элемент (XML ID)"
+
+msgid "Extend"
+msgstr "Продление"
+
+msgid "Extract"
+msgstr "Извлечение"
+
+msgid "Folder for the results"
+msgstr "Папка для результатов"
+
+msgid "Format of the signature"
+msgstr "Формат подписи"
+
+msgid "Identity of the signature (XML ID)"
+msgstr "Идентификатор подписи (XML ID)"
+
+msgid "In one folder"
+msgstr "В одну папку"
+
+msgid "JWS (JSON Web Signature)"
+msgstr "JWS (JSON Web Signature)"
+
+msgid "JWT (signed token)"
+msgstr "JWT (подписанный токен)"
+
+msgid "LT: with validation data"
+msgstr "LT: с данными проверки"
+
+msgid "LTA: for long-term archival"
+msgstr "LTA: для долгого хранения"
+
+msgid "Level of the signature"
+msgstr "Уровень подписи"
+
+msgid "Next to each document"
+msgstr "Рядом с каждым документом"
+
+msgid "PDF (PAdES)"
+msgstr "PDF (PAdES)"
+
+msgid "Path to the folder"
+msgstr "Путь к папке"
+
+msgid "Plain, no level"
+msgstr "Простая, без уровня"
+
+msgid "Put the content inside the signature (attached)"
+msgstr "Поместить содержимое внутрь подписи"
+
+msgid "SOAP message (WS-Security)"
+msgstr "SOAP-сообщение (WS-Security)"
+
+msgid "Show the options that are rarely needed"
+msgstr "Показать редко нужные параметры"
+
+msgid "Sign: sign documents with a key store file as CMS, CAdES, XML, XAdES, SOAP, PDF, PAdES, JWS or JWT; you see exactly what is signed, in which format and with which certificate, then confirm. Verify: check signatures of any of these formats; the report says what was proven, what could not be checked and why. Extend: add time and validation evidence to CAdES, XAdES and PAdES. Extract: take the content out of a signature container, without checking it. Timestamp: get or check a time stamp. Hash: the digest of a file of up to 1 GiB, read in pieces; there is no practical time limit (24 h), Cancel stops it. Inspect: the public details of a certificate, a signature file, a key store or the tokens plugged in. Only Sign uses a private key."
+msgstr "Подпись: подписать документы файлом хранилища ключей как CMS, CAdES, XML, XAdES, SOAP, PDF, PAdES, JWS или JWT; вы видите, что именно подписывается, в каком формате и каким сертификатом, затем подтверждаете. Проверка: проверить подписи любого из этих форматов; отчёт говорит, что доказано, что не удалось проверить и почему. Продление: добавить доказательства времени и проверки к CAdES, XAdES и PAdES. Извлечение: достать содержимое из контейнера подписи без его проверки. Метка времени: получить или проверить метку времени. Хеш: дайджест файла до 1 ГиБ, читаемого частями; практического ограничения по времени нет (24 ч), «Отмена» останавливает. Осмотр: открытые сведения о сертификате, файле подписи, хранилище ключей или подключённых токенах. Закрытый ключ применяет только «Подпись»."
+
+msgid "T: with a time stamp"
+msgstr "T: с меткой времени"
+
+msgid "Timestamp"
+msgstr "Метка времени"
+
+msgid "Verify"
+msgstr "Проверка"
+
+msgid "Verify signatures"
+msgstr "Проверить подписи"
+
+msgid "Where the results are written"
+msgstr "Куда записываются результаты"
+
+msgid "XML (XMLDSig / XAdES)"
+msgstr "XML (XMLDSig / XAdES)"
+
+msgid "Evidence: CRLs (files, separated by ;)"
+msgstr "Данные проверки: списки отзыва CRL (файлы, через ;)"
+
+msgid "Evidence: OCSP responses (files, separated by ;)"
+msgstr "Данные проверки: ответы OCSP (файлы, через ;)"
+
+msgid "Evidence: certificates of the chain (files, separated by ;)"
+msgstr "Данные проверки: сертификаты цепочки (файлы, через ;)"
+
+msgid "Advanced"
+msgstr "Дополнительно"
+
+msgid "On top of the system's own scale; every window takes it as soon as it is saved."
+msgstr "Поверх масштаба системы; каждое окно принимает его сразу после сохранения."
+
+msgid "Please wait…"
+msgstr "Подождите…"
+
+msgid "Proxy address"
+msgstr "Адрес прокси"
+
+msgid "Size of the windows and the text"
+msgstr "Размер окон и текста"
+
+msgid "Text of the window"
+msgstr "Текст окна"

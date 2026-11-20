@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Сообщить об уязвимости (приватно)
+    url: https://github.com/arynyklas/OpenNCALayer/security/advisories/new
+    about: Об уязвимостях — только здесь, не в Issues и не в чате.
+  - name: Вопросы и обсуждение (Telegram)
+    url: https://t.me/OpenNCALayer
+    about: Чат проекта — вопросы по установке и работе. Об ошибках пишите здесь, в Issues.

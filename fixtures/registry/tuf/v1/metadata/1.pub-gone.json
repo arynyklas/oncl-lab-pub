@@ -1,0 +1,47 @@
+{
+  "signatures": [],
+  "signed": {
+    "_type": "targets",
+    "expires": "2027-11-01T00:00:00Z",
+    "spec_version": "1.0.31",
+    "targets": {
+      "plugins/gone/kz.gone.thing/1.0.0.onclp": {
+        "length": 123456,
+        "hashes": {
+          "sha256": "d6eb5e9caad7117f8a1a8fe020b91237bb338b0ab4fcc798b8d1ff03e88db858"
+        },
+        "custom": {
+          "oncl": {
+            "schema": 1,
+            "id": "kz.gone.thing",
+            "version": "1.0.0",
+            "url": "https://github.com/arynyklas/OpenNCALayer/releases/download/pub-gone-d6eb5e9caad7117f8a1a8fe020b91237bb338b0ab4fcc798b8d1ff03e88db858/kz.gone.thing-1.0.0.onclp",
+            "source": {
+              "archive_sha256": "d58a24dd1e89f9be0b10ccd2d02dbc49144fb5cee2d544742112f839c95051aa",
+              "archive_length": 2345678,
+              "fetch": "https://downloads.gone.example/kz.gone.thing-1.0.0.src.tar.gz",
+              "path": "crates/market",
+              "license": "Apache-2.0",
+              "builder": "sha256:df6b07176a9b17cc4c9afc257bd404732e7d09b76436c7890f7b7be14e579794"
+            },
+            "channel": "stable",
+            "min_core": "0.1.3",
+            "modules": [
+              "kz.gone.thing.Signer"
+            ],
+            "name": {
+              "ru": "Вещь",
+              "kk": "Зат",
+              "en": "Thing"
+            },
+            "capabilities": {
+              "keys": true
+            },
+            "rollout": 100
+          }
+        }
+      }
+    },
+    "version": 1
+  }
+}

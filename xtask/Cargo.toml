@@ -1,0 +1,98 @@
+[package]
+name = "xtask"
+description = "OpenNCALayer development tasks (`cargo xtask …`)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+oncl-xml.workspace = true
+# `registry`: the versions of the core's own bundles, as `getBundles` reports them; `index`:
+# the bundles no plugin may replace.
+oncl-builtin-accessory.workspace = true
+# `builtins build`, `win7`, `package linux-build`: the built-in modules' WebAssembly;
+# `index`: their module names, which no plugin may serve.
+oncl-builtins-build.workspace = true
+# `registry`: what a plugin's capabilities allow, in the install window's words.
+oncl-flows.workspace = true
+oncl-gost.workspace = true
+oncl-ipc.workspace = true
+# `platform-interop`: the host functions of the synthetic plugin.
+oncl-pdk.workspace = true
+# `plugin pack`: the build and checks of a plugin package (the builder image's code).
+oncl-pack.workspace = true
+oncl-pki = { workspace = true, features = ["testing"] }
+# `plugin pack` and `index add-plugin`: the package format and the ABI check the daemon uses.
+oncl-plugin = { workspace = true, features = ["distribution"] }
+oncl-protocol.workspace = true
+# `platform-proof`: reads the durable audit journal of the measured oncl-server for the
+# key-application counts of the HTTP cases.
+oncl-server = { path = "../crates/oncl-server", features = ["test-support"] }
+oncl-testkit.workspace = true
+# `token-emu`: an emulated token served to vpcd (the PC/SC test of CI).
+oncl-token = { workspace = true, features = ["emulator"] }
+oncl-update.workspace = true
+# `package winget-setup`: the payload format of the WinGet installer entry.
+oncl-winget-setup.workspace = true
+
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+der.workspace = true
+# `package platform`: the random salts of the smoke test's PKCS#12 container.
+getrandom.workspace = true
+# `upstream`: the gzip stream inside the Windows lite dropper.
+flate2.workspace = true
+# `tuf`: the format of the secret key files (a minisign secret key holds an Ed25519 key).
+minisign.workspace = true
+object.workspace = true
+pkcs8.workspace = true
+rand_chacha.workspace = true
+# `privacy`: the denylist entries and the scans of tracked text.
+regex.workspace = true
+rsa.workspace = true
+# `tuf`: passphrases without echo.
+rpassword.workspace = true
+# `registry`: the schema of the ports' `registry.toml`; `upstream`: the facts and state schemas.
+serde.workspace = true
+serde_json.workspace = true
+# `platform-token-host`: the runtime of the hosted service library.
+tokio.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+spki.workspace = true
+# `ext-e2e`: the browsers' short TMPDIR.
+tempfile.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
+# `licenses`: the accepted licences of `deny.toml`; `package platform`: the smoke test's
+# configuration, written from the shipped example.
+toml = { workspace = true, features = ["display"] }
+tungstenite.workspace = true
+ureq.workspace = true
+x509-cert.workspace = true
+zip.workspace = true
+# `sign`: passwords wiped after use.
+zeroize.workspace = true
+# `platform-interop`: the synthetic WebAssembly plugin of the plugin-call cases.
+wat.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# `ext-e2e`: signal handling and killing process groups.
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# `platform-proof`: the operating system's peak working set / private bytes of a measured
+# process, its job object, CTRL_BREAK delivery and the drive preflight.
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

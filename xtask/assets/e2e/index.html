@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenNCALayer extension e2e</title>
+</head>
+<body>
+<p>OpenNCALayer extension e2e. Driven by <code>cargo xtask ext-e2e</code> over WebDriver.</p>
+<script>
+// Scenario steps for `cargo xtask ext-e2e`. The page is an ordinary site: it never replaces
+// `WebSocket` or `fetch` itself, it only uses them as a site built for NCALayer does.
+// `window.oncl_e2e.run(name, arg)` resolves with what the step observed; the xtask asserts.
+(function () {
+  'use strict';
+
+  const NCALAYER = 'wss://127.0.0.1:13579/';
+  const ORIGINAL = 'ws://127.0.0.1:13600/';
+  const WAIT_MS = 60000;
+  // A sid the shim never hands out (it counts from 1).
+  const FORGED_SID = 1000000;
+
+  /** `promise`, or a rejection after `ms`. */
+  function within(ms, what, promise) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /** A socket whose events queue up for `next()`. */
+  function connect(url) {
+    const ws = new WebSocket(url);
+    const events = [];
+    const waiters = [];
+    const push = (event) => {
+      events.push(event);
+      while (waiters.length > 0) waiters.shift()();
+    };
+    ws.onopen = () => push({ type: 'open' });
+    ws.onmessage = (e) => push({ type: 'message', data: e.data });
+    ws.onerror = () => push({ type: 'error' });
+    ws.onclose = (e) => push({ type: 'close', code: e.code, at: Date.now() });
+    let read = 0;
+    return {
+      ws,
+      /** The next event, `open` included. */
+      async next(ms = WAIT_MS) {
+        while (read === events.length) {
+          await within(ms, `an event on ${url}`, new Promise((resolve) => waiters.push(resolve)));
+        }
+        return events[read++];
+      },
+      /** The next message's text; fails on `error`/`close` first. */
+      async message(ms = WAIT_MS) {
+        for (;;) {
+          const event = await this.next(ms);
+          if (event.type === 'message') return event.data;
+          if (event.type !== 'open') throw new Error(`${url}: ${event.type} (code ${event.code}) instead of a message`);
+        }
+      },
+      /** Every event up to and including `close`. */
+      async untilClose(ms = WAIT_MS) {
+        const seen = [];
+        for (;;) {
+          const event = await this.next(ms);
+          seen.push(event);
+          if (event.type === 'close') return seen;
+        }
+      },
+    };
+  }
+
+  /** `size` bytes `i % 251`, as base64; the xtask rebuilds the same bytes. */
+  function testData(size) {
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < size; i++) bytes[i] = i % 251;
+    let binary = '';
+    for (let i = 0; i < size; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }
+
+  let held = null; // the socket of `hold`, for `held_close`
+
+  const steps = {
+    /**
+     * Whether `WebSocket` is the extension's shim rather than the browser's own: the browser's
+     * interface object has a read-only `prototype`, the shim's constructor a writable one.
+     * (Firefox before 128 gets the shim as an exported function, `[native code]` like the
+     * browser's own.)
+     */
+    async shimmed() {
+      return { shimmed: Object.getOwnPropertyDescriptor(window.WebSocket, 'prototype').writable === true };
+    },
+
+    /** The first message on a new NCALayer socket. */
+    async greeting() {
+      const socket = connect(NCALAYER);
+      const first = await socket.message();
+      socket.ws.close();
+      return { instance: socket.ws instanceof WebSocket, first };
+    },
+
+    /**
+     * Whether a page subclass of `WebSocket` makes instances of itself, for an NCALayer URL
+     * and for a loopback port outside NCALayer's range.
+     */
+    async subclass() {
+      class PageSocket extends WebSocket {}
+      const made = (url) => {
+        const ws = new PageSocket(url);
+        ws.close();
+        return ws instanceof PageSocket;
+      };
+      return { ncalayer: made(NCALAYER), other: made('ws://127.0.0.1:13500/') };
+    },
+
+    /** Heartbeat echo and the reply for an unknown module. */
+    async echo_and_unknown() {
+      const socket = connect(NCALAYER);
+      const greeting = await socket.message();
+      socket.ws.send('--heartbeat--');
+      const heartbeat = await socket.message();
+      socket.ws.send('{"module":"kz.digiflow.mobile.extensions","method":"getVersion"}');
+      const unknown = await socket.message();
+      socket.ws.close();
+      return { greeting, heartbeat, unknown };
+    },
+
+    /** The "is NCALayer there" check of sites. */
+    async probe() {
+      const response = await within(WAIT_MS, 'fetch', fetch('https://127.0.0.1:13579/', { mode: 'no-cors' }));
+      return { resolved: true, status: response.status };
+    },
+
+    /** basics.sign, attached CMS, over `size` bytes of `testData`. */
+    async sign(size) {
+      const socket = connect(NCALAYER);
+      await socket.message();
+      const request = JSON.stringify({
+        module: 'kz.gov.pki.knca.basics',
+        method: 'sign',
+        args: {
+          allowedStorages: null,
+          format: 'cms',
+          data: testData(size),
+          // No `tsaProfile`: no time-stamp, no network.
+          signingParams: { decode: true, encapsulate: true, digested: false },
+          // `chain: []` (basicsSignerTestAny): the synthetic key is outside the NCA PKI.
+          signerParams: { extKeyUsageOids: [], chain: [] },
+          locale: 'ru',
+        },
+      });
+      socket.ws.send(request);
+      const reply = await socket.message();
+      socket.ws.close();
+      return { requestLength: request.length, reply };
+    },
+
+    /**
+     * A page forging a bridge `open` with its own `origin` (and a valid endpoint URL, so the
+     * bridge passes it on): the first answer for that sid. With `silenceMs`, no answer is
+     * expected: `frame` is `null` if none came within that time.
+     */
+    async forged_open(silenceMs) {
+      let listener;
+      const answer = new Promise((resolve) => {
+        listener = (event) => {
+          let frame;
+          try {
+            frame = JSON.parse(event.detail);
+          } catch {
+            return;
+          }
+          if (frame.sid !== FORGED_SID || frame.t === 'open') return;
+          resolve(frame);
+        };
+        document.addEventListener('__oncl_to_page', listener);
+      });
+      const forge = (frame) => document.dispatchEvent(new CustomEvent('__oncl_to_ext', { detail: JSON.stringify(frame) }));
+      forge({ t: 'open', sid: FORGED_SID, url: NCALAYER, origin: 'https://evil.example' });
+      const frame =
+        silenceMs == null
+          ? await within(WAIT_MS, 'an answer to the forged open', answer)
+          : await Promise.race([answer, new Promise((resolve) => setTimeout(() => resolve(null), silenceMs))]);
+      document.removeEventListener('__oncl_to_page', listener);
+      forge({ t: 'close', sid: FORGED_SID, origin: 'https://evil.example' });
+      return { frame };
+    },
+
+    /** Opens a socket and keeps it for `held_close`. */
+    async hold() {
+      held = connect(NCALAYER);
+      return { first: await held.message() };
+    },
+
+    /** The events of the held socket up to its close (the xtask killed the daemon). */
+    async held_close() {
+      const socket = held;
+      held = null;
+      return { events: await socket.untilClose(10000) };
+    },
+
+    /** Without the native host: the original's socket and an NCALayer socket nobody serves. */
+    async fallback() {
+      const original = connect(ORIGINAL);
+      const originalFirst = await original.message();
+      original.ws.close();
+      const ncalayer = connect(NCALAYER);
+      const events = await ncalayer.untilClose();
+      return { original: originalFirst, ncalayer: events };
+    },
+
+    /**
+     * The page's networking after the extension was removed: the first message of the
+     * stand-in original (an NCALayer-range socket) and a `fetch` of this page, or the errors.
+     */
+    async plain_network() {
+      const result = {};
+      try {
+        const socket = connect(ORIGINAL);
+        result.websocket = await socket.message(5000);
+        socket.ws.close();
+      } catch (error) {
+        result.websocket = { error: String(error) };
+      }
+      try {
+        result.fetch = (await within(5000, 'fetch', fetch('/index.html', { cache: 'no-store' }))).status;
+      } catch (error) {
+        result.fetch = { error: String(error) };
+      }
+      return result;
+    },
+
+    /** Without the native host: the NCALayer check of sites goes out as a real request. */
+    async fallback_fetch() {
+      try {
+        const response = await within(WAIT_MS, 'fetch', fetch('https://127.0.0.1:13579/', { mode: 'no-cors' }));
+        return { rejected: false, status: response.status };
+      } catch (error) {
+        return { rejected: true, name: error && error.name, message: String(error) };
+      }
+    },
+  };
+
+  window.oncl_e2e = {
+    run(name, arg) {
+      const step = steps[name];
+      if (!step) return Promise.reject(new Error(`unknown step ${name}`));
+      return step(arg);
+    },
+  };
+})();
+</script>
+</body>
+</html>

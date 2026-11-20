@@ -1,0 +1,18 @@
+{
+  "name": "target-length-mismatch",
+  "attack": "the stable index target is one byte longer than targets metadata says",
+  "now": "2026-11-16T00:00:00Z",
+  "trust_anchor": "valid/metadata/1.root.json",
+  "prior_state": null,
+  "must_fail_at": "target",
+  "error_class": "Target length mismatch (LengthOrHashMismatchError / DownloadLengthMismatchError)",
+  "changed_files_vs_valid": [
+    "targets/indexes/4d6db83f027ece1d378930dbe36b31f01250194905a562d75d14fdb982e41dff.stable.json"
+  ],
+  "python_tuf": {
+    "verdict": "REJECT",
+    "step": "target",
+    "error": "DownloadLengthMismatchError: Downloaded 1006 bytes exceeding the maximum allowed length of 1005",
+    "diverges_from_contract": false
+  }
+}

@@ -1,0 +1,67 @@
+name: Несовместимость с оригиналом
+description: Сайт работает с оригинальным NCALayer, а с OpenNCALayer — нет
+labels: ["compat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Что уже известно об отличиях: docs/user/compatibility.md.
+        Не прикладывайте ключи, пароли и сертификаты.
+  - type: input
+    id: url
+    attributes:
+      label: Адрес сайта
+      placeholder: https://example.kz/
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: Что вы делаете на сайте и что происходит
+      description: С оригинальным NCALayer то же самое работает. Опишите, что видите у нас.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Система
+      options:
+        - Windows 7
+        - Windows 10 или новее
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Браузер и версия
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Как сайт подключается
+      options:
+        - Расширение браузера
+        - Сертификат для браузера (TLS)
+        - Не знаю
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия OpenNCALayer
+      description: Из окна «О программе» или `openncalayer --version`.
+    validations:
+      required: true
+  - type: input
+    id: original
+    attributes:
+      label: Версия оригинального NCALayer, с которой работает
+  - type: textarea
+    id: log
+    attributes:
+      label: Сообщение на сайте или журнал
+      description: Просмотрите и уберите всё личное.
+      render: text
